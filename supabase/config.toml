@@ -1,0 +1,9 @@
+# Configuração mínima do Supabase CLI (Fase 1).
+# Ajuste project_id ao linkar o projeto real: `supabase link --project-ref <ref>`.
+# Migrations em supabase/migrations/ são aplicadas com `supabase db push`.
+# Seed em supabase/seed/dia_zero.sql (rode manualmente ou via db reset configurado).
+
+project_id = "pontao-beira-rio"
+
+[db]
+major_version = 16

@@ -61,4 +61,6 @@ pnpm preview        # serve o build (para testar instalação/offline)
 
 - ✅ **Fase 0** — Fundação (monorepo, PWA, tokens, libs, lint anti-float).
 - ✅ **Fase 2** — Núcleo de domínio com a suíte de testes §11.
-- ⏳ Próximo: **Fase 1** (modelo de dados, migrations, RLS, PowerSync, seed dia-zero).
+- 🟡 **Fase 1** — Schema completo (§6) + RLS + seed + sync rules escritos e
+  validados contra Postgres 16 (Docker), em `supabase/`. Falta provisionar a
+  nuvem (credenciais) e o wiring do cliente PowerSync em `apps/web/src/data/`.

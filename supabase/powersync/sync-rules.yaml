@@ -1,0 +1,47 @@
+# PowerSync — sync rules (esqueleto, §7.3).
+#
+# Define qual subconjunto do Postgres desce para o SQLite local de cada usuário.
+# É a primeira camada de permissão ("o que desce"); o RLS é a última ("o que
+# sobe"). Este esqueleto sincroniza o operacional/catálogo para qualquer usuário
+# autenticado. A Fase 3 adiciona buckets parametrizados por permissão para o
+# sensível (capital, sócios, folha, auditoria), espelhando o RLS.
+
+bucket_definitions:
+  # Bucket global: dados que todo usuário autenticado precisa (catálogo + eventos
+  # do dia + razão operacional). Sem parâmetros => sincroniza para todos.
+  global:
+    data:
+      # Catálogo e configuração
+      - SELECT * FROM categoria
+      - SELECT * FROM produto
+      - SELECT * FROM preco_produto
+      - SELECT * FROM custo_produto
+      - SELECT * FROM combustivel
+      - SELECT * FROM tanque
+      - SELECT * FROM bomba
+      - SELECT * FROM preco_combustivel
+      - SELECT * FROM custo_combustivel
+      - SELECT * FROM conta
+      - SELECT * FROM categoria_despesa
+      - SELECT * FROM config
+      - SELECT * FROM cliente_fiado
+      # Eventos do livro físico
+      - SELECT * FROM fechamento
+      - SELECT * FROM contagem_produto
+      - SELECT * FROM leitura_bomba
+      - SELECT * FROM entrada_mercadoria
+      - SELECT * FROM entrada_combustivel
+      - SELECT * FROM medicao_tanque
+      - SELECT * FROM perda
+      - SELECT * FROM venda_avulsa
+      # Livro financeiro operacional
+      - SELECT * FROM movimento
+      - SELECT * FROM fiado
+
+  # TODO Fase 3: buckets por permissão para o sensível, ex.:
+  #   por_usuario:
+  #     parameters: SELECT id AS usuario_id FROM usuario WHERE auth_uid = request.user_id()
+  #     data:
+  #       - SELECT * FROM socio            # só com ver_retiradas_socios
+  #       - SELECT * FROM fechamento_folha # só com gerenciar_funcionarios
+  #       - SELECT * FROM auditoria        # só com ver_auditoria

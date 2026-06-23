@@ -14,7 +14,8 @@ auditoria completa — funcionando mesmo sem internet.
 - ✅ **Fase 0** — Fundação (monorepo, PWA, tokens visuais, libs, lint anti-float).
 - ✅ **Fase 2** — Núcleo de domínio (cálculo financeiro) com a suíte de testes §11,
   incluindo a **âncora da planilha real** (diferença **+0,10**).
-- 🔜 **Fase 1** — Modelo de dados, migrations, RLS, PowerSync, seed do dia zero.
+- 🟡 **Fase 1** — Schema completo (§6) + RLS + seed + sync rules escritos e
+  validados contra Postgres 16; falta provisionar a nuvem (credenciais).
 
 Ver o [roadmap completo](./docs/roadmap.md).
 
