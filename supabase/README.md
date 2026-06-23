@@ -1,7 +1,9 @@
 # `supabase/` — banco central
 
-Schema **escrito e validado offline** contra Postgres 16 (via Docker). Ainda
-**não provisionado** na nuvem — isso precisa das suas credenciais (Fase 1).
+Schema **aplicado na nuvem** (projeto `pontao-beira-rio`, ref
+`jkvyrrzjgphhvejggiuo`, sa-east-1) — migrations + seed rodados via MCP, advisors
+de segurança zerados. Também validado offline contra Postgres 16 (Docker).
+Falta a instância **PowerSync** (serviço separado) e o wiring do cliente.
 
 ```
 supabase/
@@ -28,8 +30,10 @@ supabase/
 - ✅ **Seed do dia zero** — saldos derivados conferem (`vw_saldo_conta` mostra
   Caixa R$500,00 e Bradesco R$15.000,00 calculados dos movimentos).
 - ✅ **Sync rules** PowerSync (esqueleto): bucket global do operacional.
-- ⏳ **Provisionamento** (precisa de credenciais), **wiring do cliente**
-  (PowerSync + connector em `apps/web/src/data/`) e **tipos TS** do schema.
+- ✅ **Provisionado na nuvem** via MCP (migrations + seed aplicados; `.env` do app
+  configurado com URL + publishable key).
+- ⏳ Falta: instância **PowerSync**, **wiring do cliente** (connector em
+  `apps/web/src/data/`) e **tipos TS** do schema.
 
 ## Como aplicar (Fase 1, quando for provisionar)
 

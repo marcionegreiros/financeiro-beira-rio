@@ -28,27 +28,28 @@ A parte de maior risco, construída test-first.
 - [x] Suíte de testes cobrindo §3.4 e os casos especiais §3.6.
       **DoD:** o teste da planilha real passa (`+0,10`); cenários §11.1–14 verdes. ✅
 
-> Fases 0 e 2 foram entregues primeiro (lógica antes de telas). A Fase 1 está em
-> andamento: o schema completo já foi escrito e validado offline.
+> Fases 0 e 2 foram entregues primeiro (lógica antes de telas). A Fase 1 está
+> quase completa: schema aplicado na nuvem; falta só o sync offline (PowerSync).
 
-## 🟡 Fase 1 — Modelo de dados e migrations (schema pronto; provisionamento pendente)
+## 🟡 Fase 1 — Modelo de dados e migrations (nuvem provisionada; falta PowerSync)
 
-Artefatos escritos e **validados contra Postgres 16 (Docker)** — `supabase/`:
-
-- [x] Migrations Postgres com todas as entidades (§6) — `supabase/migrations/` (6 arquivos).
-- [x] Políticas RLS por permissão (esqueleto) + helper `tem_permissao` — `…_rls.sql`.
-- [x] Catálogo fixo de permissões (§4) — `…_catalogo_permissoes.sql`.
-- [x] Seed do **dia zero** (§3.8) — `supabase/seed/dia_zero.sql` (saldos derivados conferem).
+- [x] Migrations Postgres com todas as entidades (§6) — `supabase/migrations/` (7 arquivos).
+- [x] Políticas RLS por permissão (esqueleto) + helper `tem_permissao` (schema `private`).
+- [x] Catálogo fixo de permissões (§4).
+- [x] Seed do **dia zero** (§3.8) — saldos derivados conferem (Caixa R$500 / Bradesco R$15.000).
 - [x] PowerSync **sync rules** (esqueleto) — `supabase/powersync/sync-rules.yaml`.
-- [ ] **Provisionar a nuvem** (precisa de credenciais): criar projeto Supabase,
-      aplicar migrations, configurar instância PowerSync, `.env`.
+- [x] **Projeto Supabase provisionado** via MCP: `pontao-beira-rio`
+      (ref `jkvyrrzjgphhvejggiuo`, sa-east-1). Migrations + seed aplicados;
+      `apps/web/.env` configurado (URL + publishable key).
+- [x] **Advisors de segurança: 0 achados** (views `security_invoker`; `tem_permissao`
+      em schema `private`). Performance: só INFO (índices novos sem tráfego).
+- [ ] **Instância PowerSync** (serviço separado, não coberto pelo MCP do Supabase):
+      criar em powersync.com apontando para este Postgres + subir as sync rules.
 - [ ] **Wiring do cliente**: PowerSync schema (SQLite) + connector Supabase em
       `apps/web/src/data/`; gerar tipos TS do schema.
-- [ ] Caso de validação **R$0,10** como seed de fechamento (a lógica já está
-      coberta no teste de domínio `planilha-ancora.test.ts`).
 
-**DoD:** inserir um fechamento local e vê-lo sincronizar; seed carrega sem erro
-(seed já valida ✓; sync depende do provisionamento).
+**DoD:** inserir um fechamento e vê-lo sincronizar (seed já valida ✓; o sync
+depende da instância PowerSync + wiring do cliente).
 
 ## ⏳ Fase 3 — Autenticação e permissões
 
