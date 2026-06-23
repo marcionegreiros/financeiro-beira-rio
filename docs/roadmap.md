@@ -64,10 +64,24 @@ que a permissão não permite. **DoD:** vendedor não vê capital/sócios (UI e 
 Produtos, preços, custos, contas, categorias, configurações (§5.6, §5.4, §5.11);
 histórico de preço/custo por data. **DoD:** cadastrar todo o catálogo real.
 
-## ⏳ Fase 5 — Fechamento de caixa + relatório ⭐
+## 🟢 Fase 5 — Fechamento de caixa + relatório ⭐ (online)
 
-Fluxo central (§5.2, §8.4) e o relatório espelho (§5.3). **DoD:** fechar um dia
-real em ≤ 3 min; relatório bate com o motor da Fase 2; trava ao confirmar.
+Fluxo central (§5.2, §8.4) e o relatório espelho (§5.3) implementados e ligados ao
+banco real:
+
+- [x] Entrada teclado-first (Enter avança na ordem) de encerrantes e contagens.
+- [x] **Cálculo ao vivo** da venda física, esperado, diferença (motor da Fase 2).
+- [x] Pagamentos (PIX, débito, crédito com taxa), despesa em dinheiro.
+- [x] Dinheiro contado + **"a depositar" em destaque** + diferença (verde/vermelho).
+- [x] Confirmar **trava** o fechamento e grava eventos (fechamento + contagens +
+      leituras + movimentos por forma); impossível confirmar sem contar o dinheiro.
+- [x] **Relatório** espelho do dia, imprimível (PDF via navegador).
+- [x] Caminho de escrita **verificado sob RLS** (políticas da migration 0008).
+- [ ] Entradas de mercadoria/perdas no formulário (vêm depois; hoje vendido =
+      anterior − contagem). Itemização de despesas/fiado: Fases 6–7.
+
+**DoD:** ⚠️ parcial — fecha um dia real e o relatório bate com o motor ✓; o
+"≤ 3 min" e o offline dependem de uso real / PowerSync.
 
 ## ⏳ Fase 6 — Livro financeiro (UI)
 

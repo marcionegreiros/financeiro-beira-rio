@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { formatReais, somar, asCentavos, type Centavos } from '../../lib/money';
 import { MedidorTanque } from '../../components/MedidorTanque';
-import { sair } from '../../data/sessao';
 import {
   listarSaldos,
   listarTanques,
@@ -39,17 +38,9 @@ export function Painel() {
 
   return (
     <main className="mx-auto flex min-h-full max-w-3xl flex-col gap-8 px-6 py-8">
-      <header className="flex items-center justify-between">
-        <div>
-          <p className="text-sm uppercase tracking-widest text-ambar">Pontão Beira Rio</p>
-          <h1 className="font-display text-3xl font-bold text-claro">Painel</h1>
-        </div>
-        <button
-          onClick={() => void sair()}
-          className="rounded-lg border border-claro/20 px-3 py-1.5 text-sm text-claro/80 hover:border-claro/40"
-        >
-          Sair
-        </button>
+      <header>
+        <p className="text-sm uppercase tracking-widest text-ambar">Pontão Beira Rio</p>
+        <h1 className="font-display text-3xl font-bold text-claro">Painel</h1>
       </header>
 
       {erro && (

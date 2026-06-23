@@ -65,3 +65,7 @@ pnpm preview        # serve o build (para testar instalação/offline)
   ref `jkvyrrzjgphhvejggiuo`, sa-east-1; segurança zerada). App **conectado online**:
   `data/` (cliente, repositórios, conversão), **login** e **Painel** lendo dados
   reais. Falta só a instância **PowerSync** para o offline (SQLite local).
+- 🟢 **Fase 5** — **Fechamento de caixa** ⭐ + **Relatório** ligados ao banco:
+  entrada teclado-first, cálculo ao vivo (motor da Fase 2), pagamentos/taxas,
+  "a depositar", diferença, confirma/trava gravando eventos. Escrita verificada
+  sob RLS. Falta: entradas/perdas no form; itemizar despesas/fiado (Fases 6–7).

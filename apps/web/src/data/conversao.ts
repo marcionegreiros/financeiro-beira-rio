@@ -7,7 +7,11 @@
  * conversão da borda precisa tocar em number antes de virar bigint.)
  */
 import { asCentavos, type Centavos } from '../lib/money';
-import { asMililitros, type Mililitros } from '../domain/tipos';
+import { asMililitros, asQuantidade, type Mililitros, type Quantidade } from '../domain/tipos';
+
+const ML_POR_LITRO = 1000;
+
+// ---- Banco → domínio (entrada) ------------------------------------------------
 
 /** number/string (centavos inteiros) → Centavos. */
 export function paraCentavos(valor: number | string | null | undefined): Centavos {
@@ -18,5 +22,26 @@ export function paraCentavos(valor: number | string | null | undefined): Centavo
 /** litros (numeric, possivelmente fracionário) → Mililitros (inteiro). */
 export function litrosParaMililitros(litros: number | string | null | undefined): Mililitros {
   if (litros === null || litros === undefined) return asMililitros(0n);
-  return asMililitros(BigInt(Math.round(Number(litros) * 1000)));
+  return asMililitros(BigInt(Math.round(Number(litros) * ML_POR_LITRO)));
+}
+
+/** quantidade (numeric) → Quantidade (inteiro na v1). */
+export function paraQuantidade(valor: number | string | null | undefined): Quantidade {
+  if (valor === null || valor === undefined) return asQuantidade(0n);
+  return asQuantidade(BigInt(Math.round(Number(valor))));
+}
+
+// ---- Domínio → banco (saída/persistência) ------------------------------------
+// JSON não carrega bigint; convertemos no momento de gravar (magnitudes seguras).
+
+export function centavosParaNumero(valor: Centavos): number {
+  return Number(valor);
+}
+
+export function mililitrosParaLitros(valor: Mililitros): number {
+  return Number(valor) / ML_POR_LITRO;
+}
+
+export function quantidadeParaNumero(valor: Quantidade): number {
+  return Number(valor);
 }
