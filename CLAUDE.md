@@ -61,7 +61,7 @@ pnpm preview        # serve o build (para testar instalação/offline)
 
 - ✅ **Fase 0** — Fundação (monorepo, PWA, tokens, libs, lint anti-float).
 - ✅ **Fase 2** — Núcleo de domínio com a suíte de testes §11.
-- 🟡 **Fase 1** — Schema completo (§6) + RLS + seed aplicados na **nuvem
-  Supabase** (projeto `pontao-beira-rio`, ref `jkvyrrzjgphhvejggiuo`, sa-east-1;
-  advisors de segurança zerados). `apps/web/.env` configurado. Falta a instância
-  **PowerSync** + o wiring do cliente em `apps/web/src/data/`.
+- 🟡 **Fase 1** — Schema (§6) + RLS + seed na **nuvem Supabase** (`pontao-beira-rio`,
+  ref `jkvyrrzjgphhvejggiuo`, sa-east-1; segurança zerada). App **conectado online**:
+  `data/` (cliente, repositórios, conversão), **login** e **Painel** lendo dados
+  reais. Falta só a instância **PowerSync** para o offline (SQLite local).

@@ -43,13 +43,16 @@ A parte de maior risco, construída test-first.
       `apps/web/.env` configurado (URL + publishable key).
 - [x] **Advisors de segurança: 0 achados** (views `security_invoker`; `tem_permissao`
       em schema `private`). Performance: só INFO (índices novos sem tráfego).
+- [x] **Wiring do cliente (online)**: `@supabase/supabase-js`, camada `data/`
+      (cliente, conversão borda→bigint, repositórios), **login** (Supabase Auth)
+      e **Painel** lendo dados reais (saldos derivados, tanques, produtos).
+      Verificado de ponta a ponta (login → RLS → dados, incl. tabela sensível).
 - [ ] **Instância PowerSync** (serviço separado, não coberto pelo MCP do Supabase):
       criar em powersync.com apontando para este Postgres + subir as sync rules.
-- [ ] **Wiring do cliente**: PowerSync schema (SQLite) + connector Supabase em
-      `apps/web/src/data/`; gerar tipos TS do schema.
+      Só então a leitura passa a vir do SQLite local (offline-first).
 
-**DoD:** inserir um fechamento e vê-lo sincronizar (seed já valida ✓; o sync
-depende da instância PowerSync + wiring do cliente).
+**DoD:** ⚠️ parcial — app lê/escreve **online** contra o banco real ✓; o
+**offline** (PowerSync/SQLite) depende da instância externa.
 
 ## ⏳ Fase 3 — Autenticação e permissões
 
