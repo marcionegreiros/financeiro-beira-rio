@@ -1,0 +1,60 @@
+@import 'tailwindcss';
+
+/*
+ * Tokens visuais — direção fixa da spec §8.2 (cockpit operacional, não landing page).
+ * Tailwind v4: cada custom property gera utilitários (bg-*, text-*, font-*, etc.).
+ */
+@theme {
+  /* Paleta base petróleo/ardósia (painel escuro) */
+  --color-petroleo: #0f1a24; /* fundo escuro do painel */
+  --color-ardosia: #1c2c3a; /* superfícies/cartões no escuro */
+  --color-claro: #e8edf2; /* texto claro */
+
+  /* Acento de ação/energia — usar com parcimônia (âmbar): "a depositar", CTAs */
+  --color-ambar: #f4a024;
+
+  /* Semânticos */
+  --color-positivo: #2fa86a; /* sobra / sucesso */
+  --color-negativo: #d9544d; /* falta / alerta */
+  --color-atencao: #e6b800; /* atenção */
+
+  /* Modo claro — telas de digitação longa (contagem) */
+  --color-papel: #f7f9fb; /* fundo claro */
+  --color-tinta: #16242f; /* texto escuro */
+
+  /* Tipografia (§8.2) */
+  --font-display: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif;
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'Cascadia Code', monospace;
+}
+
+/* Números financeiros: tabular-nums é CRÍTICO para colunas de valores alinharem. */
+.numeros {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background-color: var(--color-petroleo);
+  color: var(--color-claro);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Acessibilidade: respeitar preferência de movimento reduzido (§8.5). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

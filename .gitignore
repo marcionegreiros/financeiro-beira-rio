@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+dist-ssr/
+build/
+*.local
+
+# PWA generated (vite-plugin-pwa)
+apps/web/dev-dist/
+
+# Test / coverage
+coverage/
+*.lcov
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# Env / secrets (Supabase/PowerSync entram na Fase 1)
+.env
+.env.*
+!.env.example
+
+# TypeScript build info
+*.tsbuildinfo

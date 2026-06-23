@@ -1,0 +1,7 @@
+node_modules
+dist
+dev-dist
+coverage
+pnpm-lock.yaml
+AGENTS.md
+ESPECIFICACAO_MESTRE_Pontao_Beira_Rio.md

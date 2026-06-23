@@ -1,0 +1,9 @@
+# Normaliza para LF no repositório (coerente com .editorconfig e Prettier eol=lf).
+* text=auto eol=lf
+
+# Binários (não normalizar).
+*.png binary
+*.jpg binary
+*.woff binary
+*.woff2 binary
+*.ico binary

@@ -1,0 +1,30 @@
+{
+  "name": "pontao-beira-rio",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Controle financeiro offline-first do Pontão Beira Rio (posto/porto fluvial de combustível).",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.26.2",
+  "scripts": {
+    "dev": "pnpm --filter @pontao/web dev",
+    "build": "pnpm --filter @pontao/web build",
+    "preview": "pnpm --filter @pontao/web preview",
+    "test": "pnpm --filter @pontao/web test",
+    "test:watch": "pnpm --filter @pontao/web test:watch",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.18.0",
+    "eslint": "^9.18.0",
+    "globals": "^15.14.0",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.21.0"
+  }
+}

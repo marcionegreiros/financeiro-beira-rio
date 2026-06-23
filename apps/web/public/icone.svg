@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="Pontão Beira Rio">
+  <rect width="512" height="512" rx="96" fill="#0F1A24" />
+  <!-- medidor de tanque: trilho -->
+  <rect x="176" y="96" width="160" height="280" rx="28" fill="#1C2C3A" stroke="#E8EDF2" stroke-opacity="0.18" stroke-width="6" />
+  <!-- nível de combustível (âmbar) -->
+  <rect x="176" y="216" width="160" height="160" rx="28" fill="#F4A024" />
+  <rect x="176" y="216" width="160" height="40" fill="#F4A024" fill-opacity="0.55" />
+  <!-- linha do rio -->
+  <path d="M64 432 q48 -28 96 0 t96 0 t96 0 t96 0" fill="none" stroke="#2FA86A" stroke-width="14" stroke-linecap="round" />
+  <path d="M64 464 q48 -28 96 0 t96 0 t96 0 t96 0" fill="none" stroke="#2FA86A" stroke-opacity="0.5" stroke-width="10" stroke-linecap="round" />
+</svg>
