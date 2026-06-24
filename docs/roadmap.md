@@ -59,10 +59,14 @@ A parte de maior risco, construída test-first.
 Supabase Auth; permissões por item + modelos prontos; RLS aplicado; UI esconde o
 que a permissão não permite. **DoD:** vendedor não vê capital/sócios (UI e sync).
 
-## ⏳ Fase 4 — Catálogo e configuração
+## 🟢 Fase 4 — Catálogo e configuração
 
 Produtos, preços, custos, contas, categorias, configurações (§5.6, §5.4, §5.11);
 histórico de preço/custo por data. **DoD:** cadastrar todo o catálogo real.
+
+- [x] Telas `catalogo/Produtos.tsx` (produto + preço/custo/entrada por data),
+      `catalogo/Contas.tsx`, `catalogo/Configuracoes.tsx`.
+- [x] RLS de escrita do catálogo (migration `20260623190600_rls_catalogo_fase4`).
 
 ## 🟢 Fase 5 — Fechamento de caixa + relatório ⭐ (online)
 
@@ -83,20 +87,38 @@ banco real:
 **DoD:** ⚠️ parcial — fecha um dia real e o relatório bate com o motor ✓; o
 "≤ 3 min" e o offline dependem de uso real / PowerSync.
 
-## ⏳ Fase 6 — Livro financeiro (UI)
+## 🟢 Fase 6 — Livro financeiro (UI)
 
 Contas, transferências, depósitos, despesas, aportes (§5.4, §5.5, §5.10); taxa de
 cartão automática. **DoD:** transferência não cria/destrói dinheiro.
 
-## ⏳ Fase 7 — Fiado e folha
+- [x] `financeiro/ContasETransferencias.tsx` (partida dobrada), `financeiro/Despesas.tsx`,
+      `financeiro/Socios.tsx` (aportes/pró-labore/devolução).
+
+## 🟢 Fase 7 — Fiado e folha
 
 Contas a receber e salários/vales (§5.8, §5.9). **DoD:** pagar fiado não infla a
 venda do dia; `a_receber = salário − vales`.
 
-## ⏳ Fase 8 — Painel e alertas
+- [x] `financeiro/Fiado.tsx` — clientes, fiados em aberto, baixa por recebimento
+      (`recebimento_fiado` entra como dinheiro, não como venda).
+- [x] `financeiro/Folha.tsx` — funcionários, vales (saída de caixa) e fechamento
+      mensal; `domain/folha.ts` (`a_receber = salário − vales`) coberto por teste.
+- [x] RLS Fase 7 (migration `20260624010000_rls_fiado_folha_fase7`). **Essa migration
+      também corrigiu um buraco:** `venda_avulsa` e `fiado` estavam com RLS ligado
+      sem política de INSERT — fechar caixa com venda individual ou fiado concedido
+      falhava silenciosamente.
+
+## 🟢 Fase 8 — Painel e alertas
 
 KPIs, medidor de tanque (componente-assinatura), gráficos, alertas (§5.1).
 **DoD:** painel reflete o estado real; alertas disparam nos limites.
+
+- [x] `painel/Painel.tsx` — KPIs (venda dia/mês, litros/mês, capital op/total),
+      gráfico de faturamento (recharts), medidor de tanque, alertas de estoque/tanque.
+- [x] **Litros/mês** e **capital com estoque+combustível** agora calculados de
+      verdade (antes zerados); entrada de mercadoria grava custo vigente real.
+- [ ] Gráfico de evolução do capital no tempo (pendente); alertas de fiado vencendo.
 
 ## ⏳ Fase 9 — Endurecimento offline (PWA + sync)
 

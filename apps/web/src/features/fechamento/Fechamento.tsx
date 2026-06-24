@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type FormEvent } from 'react';
 import {
   parseReais,
   formatReais,
@@ -23,7 +23,17 @@ import {
 } from '../../data/fechamento';
 import { Relatorio, type RelatorioDados } from './Relatorio';
 import { useOnlineStatus } from '../../hooks/useOnlineStatus';
-import { listarFechamentosRecentes, listarFechamentos, listarDespesasDoDia, removerDespesa, type FechamentoRecente, type FechamentoResumo, type DespesaDoDia } from '../../data/repositorios';
+import {
+  listarFechamentosRecentes,
+  listarFechamentos,
+  listarDespesasDoDia,
+  removerDespesa,
+  salvarClienteFiado,
+  type FechamentoRecente,
+  type FechamentoResumo,
+  type DespesaDoDia,
+} from '../../data/repositorios';
+import { uuidv7 } from '../../lib/uuidv7';
 import { NovaDespesaModal, FORMAS_PAGAMENTO } from '../financeiro/NovaDespesaModal';
 import { hojeManaus, formatarDataBR } from '../../lib/datas';
 import { useToast } from '../../components/ui/Toast';
@@ -74,6 +84,13 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
   const [fiadoRecValor, setFiadoRecValor] = useState('');
   const [contado, setContado] = useState('');
   const [observacao, setObservacao] = useState('');
+
+  // Cadastro de novo cliente de fiado direto no fechamento
+  const [modalNovoCliente, setModalNovoCliente] = useState(false);
+  const [novoClienteNome, setNovoClienteNome] = useState('');
+  const [novoClienteContato, setNovoClienteContato] = useState('');
+  const [salvandoNovoCliente, setSalvandoNovoCliente] = useState(false);
+  const [novoClienteOrigem, setNovoClienteOrigem] = useState<'concedido' | 'recebido' | null>(null);
 
   const [confirmando, setConfirmando] = useState(false);
   const [erroConfirmar, setErroConfirmar] = useState<string | null>(null);
@@ -139,6 +156,54 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
         }
       });
   }, [dataSelecionada, nonceRecarga]);
+
+  async function aoSalvarNovoCliente(e: FormEvent) {
+    e.preventDefault();
+    if (!novoClienteNome.trim()) {
+      toast.erro('Informe o nome do cliente.');
+      return;
+    }
+    setSalvandoNovoCliente(true);
+    try {
+      const novoCliId = uuidv7();
+      await salvarClienteFiado({
+        id: novoCliId,
+        nome: novoClienteNome.trim(),
+        contato: novoClienteContato.trim() || null,
+      });
+      toast.sucesso('Cliente cadastrado com sucesso.');
+
+      // Atualiza o contexto localmente para que o seletor inclua o novo cliente
+      if (ctx) {
+        const novosClientes = [
+          ...ctx.clientesFiado,
+          { id: novoCliId, nome: novoClienteNome.trim() },
+        ].sort((a, b) => a.nome.localeCompare(b.nome));
+        setCtx({
+          ...ctx,
+          clientesFiado: novosClientes,
+        });
+      }
+
+      // Define a seleção atual para o novo cliente cadastrado
+      if (novoClienteOrigem === 'concedido') {
+        setFiadoConClienteId(novoCliId);
+      } else if (novoClienteOrigem === 'recebido') {
+        setFiadoRecClienteId(novoCliId);
+      }
+
+      // Fecha e limpa
+      setModalNovoCliente(false);
+      setNovoClienteNome('');
+      setNovoClienteContato('');
+      setNovoClienteOrigem(null);
+    } catch (err) {
+      console.error(err);
+      toast.erro('Erro ao cadastrar o cliente.');
+    } finally {
+      setSalvandoNovoCliente(false);
+    }
+  }
 
   // Carrega o histórico de fechamentos quando a aba é aberta
   useEffect(() => {
@@ -694,15 +759,28 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
         <div className="rounded-xl border border-borda p-4">
           <h3 className="mb-3 text-sm font-semibold text-claro">Fiado Concedido (Venda pendurada)</h3>
           <div className="flex flex-col gap-3">
-            <select
-              aria-label="Cliente do fiado concedido"
-              value={fiadoConClienteId}
-              onChange={(e) => setFiadoConClienteId(e.target.value)}
-              className={CLASSE_CAMPO}
-            >
-              <option value="">Selecione o Cliente</option>
-              {ctx.clientesFiado.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
-            </select>
+            <div className="flex gap-2">
+              <select
+                aria-label="Cliente do fiado concedido"
+                value={fiadoConClienteId}
+                onChange={(e) => setFiadoConClienteId(e.target.value)}
+                className={`${CLASSE_CAMPO} flex-1`}
+              >
+                <option value="">Selecione o Cliente</option>
+                {ctx.clientesFiado.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
+              </select>
+              <button
+                type="button"
+                className="btn btn-suave p-2.5 flex items-center justify-center shrink-0"
+                title="Cadastrar novo cliente"
+                onClick={() => {
+                  setNovoClienteOrigem('concedido');
+                  setModalNovoCliente(true);
+                }}
+              >
+                <IconePlus />
+              </button>
+            </div>
             <CampoMoeda rotulo="Valor" valor={fiadoConValor} aoMudar={setFiadoConValor} />
           </div>
         </div>
@@ -710,15 +788,28 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
         <div className="rounded-xl border border-borda p-4">
           <h3 className="mb-3 text-sm font-semibold text-claro">Recebimento de Fiado (Entrou dinheiro)</h3>
           <div className="flex flex-col gap-3">
-            <select
-              aria-label="Cliente do recebimento de fiado"
-              value={fiadoRecClienteId}
-              onChange={(e) => setFiadoRecClienteId(e.target.value)}
-              className={CLASSE_CAMPO}
-            >
-              <option value="">Selecione o Cliente</option>
-              {ctx.clientesFiado.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
-            </select>
+            <div className="flex gap-2">
+              <select
+                aria-label="Cliente do recebimento de fiado"
+                value={fiadoRecClienteId}
+                onChange={(e) => setFiadoRecClienteId(e.target.value)}
+                className={`${CLASSE_CAMPO} flex-1`}
+              >
+                <option value="">Selecione o Cliente</option>
+                {ctx.clientesFiado.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
+              </select>
+              <button
+                type="button"
+                className="btn btn-suave p-2.5 flex items-center justify-center shrink-0"
+                title="Cadastrar novo cliente"
+                onClick={() => {
+                  setNovoClienteOrigem('recebido');
+                  setModalNovoCliente(true);
+                }}
+              >
+                <IconePlus />
+              </button>
+            </div>
             <CampoMoeda rotulo="Valor" valor={fiadoRecValor} aoMudar={setFiadoRecValor} />
           </div>
         </div>
@@ -871,6 +962,62 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
       />
 
       {modalReabrir}
+
+      {/* Modal: novo cliente */}
+      <Modal
+        aberto={modalNovoCliente}
+        aoFechar={() => {
+          setModalNovoCliente(false);
+          setNovoClienteNome('');
+          setNovoClienteContato('');
+          setNovoClienteOrigem(null);
+        }}
+        titulo="Novo cliente de fiado"
+        descricao="Cadastre o nome e contato do cliente para habilitá-lo na concessão ou recebimento de fiado."
+      >
+        <form onSubmit={aoSalvarNovoCliente} className="flex flex-col gap-4">
+          <label className="flex flex-col gap-1.5 text-sm font-medium text-claro">
+            Nome *
+            <input
+              className={CLASSE_CAMPO}
+              value={novoClienteNome}
+              onChange={(e) => setNovoClienteNome(e.target.value)}
+              placeholder="Ex.: João da Silva"
+              required
+            />
+          </label>
+          <label className="flex flex-col gap-1.5 text-sm font-medium text-claro">
+            Contato
+            <input
+              className={CLASSE_CAMPO}
+              value={novoClienteContato}
+              onChange={(e) => setNovoClienteContato(e.target.value)}
+              placeholder="Telefone / referência"
+            />
+          </label>
+          <div className="mt-2 flex justify-end gap-2">
+            <button
+              type="button"
+              className="btn btn-suave px-4 py-2 text-sm"
+              onClick={() => {
+                setModalNovoCliente(false);
+                setNovoClienteNome('');
+                setNovoClienteContato('');
+                setNovoClienteOrigem(null);
+              }}
+            >
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              disabled={salvandoNovoCliente}
+              className="btn btn-primario px-4 py-2 text-sm"
+            >
+              {salvandoNovoCliente ? 'Salvando…' : 'Cadastrar'}
+            </button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }
@@ -1093,5 +1240,13 @@ function Historico({
       </div>
       <DataTable colunas={colunas} dados={filtrados} chaveLinha={(f) => f.id} carregando={carregando} vazio="Nenhum fechamento no período." />
     </div>
+  );
+}
+
+function IconePlus() {
+  return (
+    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 5v14M5 12h14" />
+    </svg>
   );
 }

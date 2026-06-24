@@ -1340,7 +1340,9 @@ export async function lancarVale(
 /** Soma dos vales de um funcionário na competência (mês de `competencia` = AAAA-MM-01). */
 export async function totalValesCompetencia(funcionarioId: string, competencia: string): Promise<Centavos> {
   const inicio = competencia;
-  const [y, m] = inicio.split('-').map(Number);
+  const partes = inicio.split('-');
+  const y = Number(partes[0]);
+  const m = Number(partes[1]);
   const prox = m === 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, '0')}-01`;
   const { data, error } = await supabase
     .from('movimento')

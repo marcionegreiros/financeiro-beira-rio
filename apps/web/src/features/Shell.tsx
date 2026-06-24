@@ -9,10 +9,12 @@ import { Configuracoes } from './catalogo/Configuracoes';
 import { ContasETransferencias } from './financeiro/ContasETransferencias';
 import { Despesas } from './financeiro/Despesas';
 import { Socios } from './financeiro/Socios';
+import { Fiado } from './financeiro/Fiado';
+import { Folha } from './financeiro/Folha';
 import { useOnlineStatus } from '../hooks/useOnlineStatus';
 import { Auditoria } from './auditoria/Auditoria';
 
-type Tela = 'painel' | 'fechamento' | 'produtos' | 'configuracoes' | 'transferencias' | 'despesas' | 'socios' | 'auditoria';
+type Tela = 'painel' | 'fechamento' | 'produtos' | 'configuracoes' | 'transferencias' | 'despesas' | 'socios' | 'fiado' | 'folha' | 'auditoria';
 export type Tema = 'light' | 'dark' | 'dark2' | 'system';
 
 // Ícones vetoriais (traço fino, grade 24) para navegação — sem emojis.
@@ -51,6 +53,16 @@ const ICONES: Record<Tela | 'sair', (className: string) => ReactNode> = {
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
       <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+    </svg>
+  ),
+  fiado: (className) => (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3 10h18M7 15h2m4 0h4M5 6h14a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2z" />
+    </svg>
+  ),
+  folha: (className) => (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a4 4 0 00-3-3.87M9 20H4v-2a4 4 0 013-3.87m6-1.13a4 4 0 10-4-4 4 4 0 004 4zm6-4a3 3 0 01-3 3" />
     </svg>
   ),
   auditoria: (className) => (
@@ -141,6 +153,8 @@ export function Shell({ usuario }: { usuario: UsuarioAtual }) {
   const podeTransferir = usuario.permissoes.has('transferir_entre_contas');
   const podeLancarDespesa = usuario.permissoes.has('lancar_despesa');
   const podeGerenciarSocios = usuario.permissoes.has('gerenciar_socios');
+  const podeGerenciarFiado = usuario.permissoes.has('gerenciar_fiado');
+  const podeGerenciarFuncionarios = usuario.permissoes.has('gerenciar_funcionarios');
   const podeVerAuditoria = usuario.permissoes.has('ver_auditoria');
 
   const itensNav = [
@@ -152,6 +166,8 @@ export function Shell({ usuario }: { usuario: UsuarioAtual }) {
       label: 'Contas & transferências',
     },
     podeGerenciarSocios && { id: 'socios' as Tela, label: 'Sócios' },
+    podeGerenciarFiado && { id: 'fiado' as Tela, label: 'Fiado' },
+    podeGerenciarFuncionarios && { id: 'folha' as Tela, label: 'Folha' },
     podeCadastrarProduto && { id: 'produtos' as Tela, label: 'Produtos' },
     podeEditarConfig && { id: 'configuracoes' as Tela, label: 'Configurações' },
     podeVerAuditoria && { id: 'auditoria' as Tela, label: 'Auditoria' },
@@ -276,6 +292,8 @@ export function Shell({ usuario }: { usuario: UsuarioAtual }) {
             />
           )}
           {tela === 'socios' && podeGerenciarSocios && <Socios usuarioId={usuario.id} />}
+          {tela === 'fiado' && podeGerenciarFiado && <Fiado usuarioId={usuario.id} />}
+          {tela === 'folha' && podeGerenciarFuncionarios && <Folha usuarioId={usuario.id} />}
           {tela === 'produtos' && podeCadastrarProduto && <Produtos usuario={usuario} />}
           {tela === 'configuracoes' && podeEditarConfig && (
             <Configuracoes tema={theme} aoTrocarTema={alterarTema} />

@@ -1,12 +1,10 @@
 import { useState, useEffect, useMemo, type FormEvent } from 'react';
 import {
   listarFiadosEmAberto,
-  listarClientesFiado,
   salvarClienteFiado,
   receberFiado,
   listarContasCompletas,
   type FiadoEmAberto,
-  type ClienteFiado,
   type ContaCompleta,
 } from '../../data/repositorios';
 import { uuidv7 } from '../../lib/uuidv7';
@@ -27,7 +25,6 @@ function formatarData(iso: string): string {
 export function Fiado({ usuarioId }: { usuarioId: string }) {
   const toast = useToast();
   const [fiados, setFiados] = useState<FiadoEmAberto[]>([]);
-  const [clientes, setClientes] = useState<ClienteFiado[]>([]);
   const [contas, setContas] = useState<ContaCompleta[]>([]);
   const [carregando, setCarregando] = useState(true);
   const [busca, setBusca] = useState('');
@@ -45,23 +42,16 @@ export function Fiado({ usuarioId }: { usuarioId: string }) {
   const contaCaixa = contas.find((c) => c.tipo === 'dinheiro' && c.ativo) ?? contas.find((c) => c.tipo === 'dinheiro');
 
   async function recarregar() {
-    const [f, cl] = await Promise.all([listarFiadosEmAberto(), listarClientesFiado()]);
-    setFiados(f);
-    setClientes(cl);
+    setFiados(await listarFiadosEmAberto());
   }
 
   useEffect(() => {
     let ativo = true;
     (async () => {
       try {
-        const [f, cl, c] = await Promise.all([
-          listarFiadosEmAberto(),
-          listarClientesFiado(),
-          listarContasCompletas(),
-        ]);
+        const [f, c] = await Promise.all([listarFiadosEmAberto(), listarContasCompletas()]);
         if (!ativo) return;
         setFiados(f);
-        setClientes(cl);
         setContas(c);
       } catch (e) {
         console.error(e);
@@ -73,7 +63,6 @@ export function Fiado({ usuarioId }: { usuarioId: string }) {
     return () => {
       ativo = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [toast]);
 
   const filtrados = useMemo(() => {
