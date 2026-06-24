@@ -43,6 +43,15 @@ import { PageHeader } from '../../components/ui/PageHeader';
 import { CLASSE_CAMPO } from '../../components/ui/Campo';
 
 const ZERO = asCentavos(0n);
+
+function centavosParaString(valor: number | bigint): string {
+  const v = BigInt(valor);
+  const negativo = v < 0n;
+  const abs = negativo ? -v : v;
+  const centavosStr = (abs % 100n).toString().padStart(2, '0');
+  const inteirosStr = (abs / 100n).toString();
+  return `${negativo ? '-' : ''}${inteirosStr},${centavosStr}`;
+}
 const inputClasse = 'w-28 rounded-lg px-3 py-2 text-right numeros';
 
 interface Props {
@@ -78,10 +87,9 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
   const [credito, setCredito] = useState('');
   const [despesasDoDia, setDespesasDoDia] = useState<DespesaDoDia[]>([]);
   const [modalDespesa, setModalDespesa] = useState(false);
-  const [fiadoConClienteId, setFiadoConClienteId] = useState('');
-  const [fiadoConValor, setFiadoConValor] = useState('');
-  const [fiadoRecClienteId, setFiadoRecClienteId] = useState('');
-  const [fiadoRecValor, setFiadoRecValor] = useState('');
+  const [mostrarFiados, setMostrarFiados] = useState(false);
+  const [fiadosConcedidos, setFiadosConcedidos] = useState<{ id?: string; clienteId: string; valor: string; vencimento: string | null }[]>([]);
+  const [fiadosRecebidos, setFiadosRecebidos] = useState<{ id?: string; clienteId: string; valor: string; fiadoId: string | null }[]>([]);
   const [contado, setContado] = useState('');
   const [observacao, setObservacao] = useState('');
 
@@ -90,7 +98,7 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
   const [novoClienteNome, setNovoClienteNome] = useState('');
   const [novoClienteContato, setNovoClienteContato] = useState('');
   const [salvandoNovoCliente, setSalvandoNovoCliente] = useState(false);
-  const [novoClienteOrigem, setNovoClienteOrigem] = useState<'concedido' | 'recebido' | null>(null);
+  const [novoClienteOrigem, setNovoClienteOrigem] = useState<{ tipo: 'concedido' | 'recebido'; index: number } | null>(null);
 
   const [confirmando, setConfirmando] = useState(false);
   const [erroConfirmar, setErroConfirmar] = useState<string | null>(null);
@@ -121,12 +129,15 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
           setPix(vs.pix);
           setDebito(vs.debito);
           setCredito(vs.credito);
-          setFiadoConClienteId(vs.fiadoConClienteId);
-          setFiadoConValor(vs.fiadoConValor);
-          setFiadoRecClienteId(vs.fiadoRecClienteId);
-          setFiadoRecValor(vs.fiadoRecValor);
+          setFiadosConcedidos(vs.fiadosConcedidos || []);
+          setFiadosRecebidos(vs.fiadosRecebidos || []);
           setContado(vs.contado);
           setObservacao(vs.observacao);
+          if ((vs.fiadosConcedidos && vs.fiadosConcedidos.length > 0) || (vs.fiadosRecebidos && vs.fiadosRecebidos.length > 0)) {
+            setMostrarFiados(true);
+          } else {
+            setMostrarFiados(false);
+          }
         } else {
           setLeituras({});
           setContagens({});
@@ -134,12 +145,11 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
           setPix('');
           setDebito('');
           setCredito('');
-          setFiadoConClienteId('');
-          setFiadoConValor('');
-          setFiadoRecClienteId('');
-          setFiadoRecValor('');
+          setFiadosConcedidos([]);
+          setFiadosRecebidos([]);
           setContado('');
           setObservacao('');
+          setMostrarFiados(false);
         }
       })
       .catch((e: unknown) => {
@@ -186,10 +196,13 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
       }
 
       // Define a seleção atual para o novo cliente cadastrado
-      if (novoClienteOrigem === 'concedido') {
-        setFiadoConClienteId(novoCliId);
-      } else if (novoClienteOrigem === 'recebido') {
-        setFiadoRecClienteId(novoCliId);
+      if (novoClienteOrigem) {
+        const { tipo, index } = novoClienteOrigem;
+        if (tipo === 'concedido') {
+          setFiadosConcedidos(prev => prev.map((f, idx) => idx === index ? { ...f, clienteId: novoCliId } : f));
+        } else if (tipo === 'recebido') {
+          setFiadosRecebidos(prev => prev.map((f, idx) => idx === index ? { ...f, clienteId: novoCliId } : f));
+        }
       }
 
       // Fecha e limpa
@@ -317,8 +330,8 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
     const creditoC = parseReais(credito);
     const despesaC = totalDespesasDinheiro(despesasDoDia);
     const contadoC = parseReais(contado);
-    const fiadoConC = parseReais(fiadoConValor);
-    const fiadoRecC = parseReais(fiadoRecValor);
+    const fiadoConC = somar(...fiadosConcedidos.map(f => parseReais(f.valor)));
+    const fiadoRecC = somar(...fiadosRecebidos.map(f => parseReais(f.valor)));
 
     const dCartaoDeb = liquidoCartao({
       bruto: debitoC,
@@ -367,7 +380,7 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
     };
   }, [
     ctx, leituras, contagens, entradasEstoque, vendasIndividuais, pix, debito, credito,
-    despesasDoDia, contado, fiadoConValor, fiadoRecValor
+    despesasDoDia, contado, fiadosConcedidos, fiadosRecebidos
   ]);
 
   function aoEnter(e: KeyboardEvent<HTMLInputElement>, indice: number) {
@@ -400,14 +413,22 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
         vendasIndividuais: calc.ind
           .filter((p) => p.preenchido)
           .map((p) => ({ produtoId: p.id, quantidade: p.vendido, valor: p.valor })),
-        fiadosConcedidos:
-          calc.fiadoConC > 0n && fiadoConClienteId
-            ? [{ clienteId: fiadoConClienteId, valor: calc.fiadoConC }]
-            : [],
-        fiadosRecebidos:
-          calc.fiadoRecC > 0n && fiadoRecClienteId
-            ? [{ clienteId: fiadoRecClienteId, valor: calc.fiadoRecC }]
-            : [],
+        fiadosConcedidos: fiadosConcedidos
+          .filter(f => f.clienteId && parseReais(f.valor) > 0n)
+          .map(f => ({
+            id: f.id,
+            clienteId: f.clienteId,
+            valor: parseReais(f.valor),
+            vencimento: f.vencimento || null,
+          })),
+        fiadosRecebidos: fiadosRecebidos
+          .filter(f => f.clienteId && parseReais(f.valor) > 0n)
+          .map(f => ({
+            id: f.id,
+            clienteId: f.clienteId,
+            valor: parseReais(f.valor),
+            fiadoId: f.fiadoId || null,
+          })),
         cashSales: calc.cashSales,
         pix: calc.pixC,
         debitoNet: calc.dCartaoDeb.liquido,
@@ -750,70 +771,193 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
         <span className="numeros text-2xl font-bold text-claro">{formatReais(calc.vendaFisica)}</span>
       </section>
 
-      {/* Fiados */}
-      <section className="grid gap-4 cartao p-5 sm:grid-cols-2">
-        <h2 className="font-display font-semibold text-claro sm:col-span-2">
-          Fiados do Dia
-        </h2>
-        
-        <div className="rounded-xl border border-borda p-4">
-          <h3 className="mb-3 text-sm font-semibold text-claro">Fiado Concedido (Venda pendurada)</h3>
-          <div className="flex flex-col gap-3">
-            <div className="flex gap-2">
-              <select
-                aria-label="Cliente do fiado concedido"
-                value={fiadoConClienteId}
-                onChange={(e) => setFiadoConClienteId(e.target.value)}
-                className={`${CLASSE_CAMPO} flex-1`}
-              >
-                <option value="">Selecione o Cliente</option>
-                {ctx.clientesFiado.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
-              </select>
-              <button
-                type="button"
-                className="btn btn-suave p-2.5 flex items-center justify-center shrink-0"
-                title="Cadastrar novo cliente"
-                onClick={() => {
-                  setNovoClienteOrigem('concedido');
-                  setModalNovoCliente(true);
-                }}
-              >
-                <IconePlus />
-              </button>
-            </div>
-            <CampoMoeda rotulo="Valor" valor={fiadoConValor} aoMudar={setFiadoConValor} />
-          </div>
+      {/* Fiados do Dia */}
+      {!mostrarFiados ? (
+        <div className="flex justify-center my-2">
+          <button
+            type="button"
+            onClick={() => {
+              setMostrarFiados(true);
+              if (fiadosConcedidos.length === 0) {
+                setFiadosConcedidos([{ clienteId: '', valor: '', vencimento: null }]);
+              }
+              if (fiadosRecebidos.length === 0) {
+                setFiadosRecebidos([{ clienteId: '', valor: '', fiadoId: null }]);
+              }
+            }}
+            className="btn btn-suave px-4 py-2 text-sm flex items-center gap-2 border border-dashed border-borda hover:border-suave/50 transition-colors duration-200"
+          >
+            <IconePlus /> Registrar Fiados do Dia (Venda Pendurada / Recebimento)
+          </button>
         </div>
+      ) : (
+        <section className="grid gap-4 cartao p-5 sm:grid-cols-2 relative">
+          <div className="sm:col-span-2 flex items-center justify-between">
+            <h2 className="font-display font-semibold text-claro">
+              Fiados do Dia
+            </h2>
+            <button
+              type="button"
+              onClick={() => {
+                setMostrarFiados(false);
+              }}
+              className="text-xs text-suave hover:text-claro font-medium"
+            >
+              Recolher seção
+            </button>
+          </div>
+          
+          <div className="rounded-xl border border-borda p-4 flex flex-col gap-4">
+            <h3 className="text-sm font-semibold text-claro border-b border-borda pb-2">Fiados Concedidos (Venda pendurada)</h3>
+            
+            {fiadosConcedidos.map((item, index) => (
+              <div key={index} className="flex flex-col gap-3 border-b border-borda/50 pb-4 last:border-0 last:pb-0 relative pt-2">
+                {fiadosConcedidos.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => setFiadosConcedidos(prev => prev.filter((_, idx) => idx !== index))}
+                    className="absolute right-0 top-0 text-negativo hover:text-negativo-claro text-xs font-medium"
+                  >
+                    Remover
+                  </button>
+                )}
+                <div className="flex gap-2">
+                  <select
+                    aria-label={`Cliente do fiado concedido #${index + 1}`}
+                    value={item.clienteId}
+                    onChange={(e) => setFiadosConcedidos(prev => prev.map((f, idx) => idx === index ? { ...f, clienteId: e.target.value } : f))}
+                    className={`${CLASSE_CAMPO} flex-1`}
+                  >
+                    <option value="">Selecione o Cliente</option>
+                    {ctx.clientesFiado.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
+                  </select>
+                  <button
+                    type="button"
+                    className="btn btn-suave p-2.5 flex items-center justify-center shrink-0"
+                    title="Cadastrar novo cliente"
+                    onClick={() => {
+                      setNovoClienteOrigem({ tipo: 'concedido', index });
+                      setModalNovoCliente(true);
+                    }}
+                  >
+                    <IconePlus />
+                  </button>
+                </div>
+                <div className="grid gap-3 grid-cols-2">
+                  <CampoMoeda rotulo="Valor" valor={item.valor} aoMudar={(val) => setFiadosConcedidos(prev => prev.map((f, idx) => idx === index ? { ...f, valor: val } : f))} />
+                  <label className="flex flex-col gap-1.5 text-sm font-medium text-claro">
+                    Vencimento
+                    <input
+                      type="date"
+                      aria-label={`Vencimento fiado concedido #${index + 1}`}
+                      value={item.vencimento || ''}
+                      onChange={(e) => setFiadosConcedidos(prev => prev.map((f, idx) => idx === index ? { ...f, vencimento: e.target.value || null } : f))}
+                      className={CLASSE_CAMPO}
+                    />
+                  </label>
+                </div>
+              </div>
+            ))}
 
-        <div className="rounded-xl border border-borda p-4">
-          <h3 className="mb-3 text-sm font-semibold text-claro">Recebimento de Fiado (Entrou dinheiro)</h3>
-          <div className="flex flex-col gap-3">
-            <div className="flex gap-2">
-              <select
-                aria-label="Cliente do recebimento de fiado"
-                value={fiadoRecClienteId}
-                onChange={(e) => setFiadoRecClienteId(e.target.value)}
-                className={`${CLASSE_CAMPO} flex-1`}
-              >
-                <option value="">Selecione o Cliente</option>
-                {ctx.clientesFiado.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
-              </select>
-              <button
-                type="button"
-                className="btn btn-suave p-2.5 flex items-center justify-center shrink-0"
-                title="Cadastrar novo cliente"
-                onClick={() => {
-                  setNovoClienteOrigem('recebido');
-                  setModalNovoCliente(true);
-                }}
-              >
-                <IconePlus />
-              </button>
-            </div>
-            <CampoMoeda rotulo="Valor" valor={fiadoRecValor} aoMudar={setFiadoRecValor} />
+            <button
+              type="button"
+              onClick={() => setFiadosConcedidos(prev => [...prev, { clienteId: '', valor: '', vencimento: null }])}
+              className="btn btn-suave/50 px-3 py-1.5 text-xs self-start"
+            >
+              + Adicionar outra concessão
+            </button>
           </div>
-        </div>
-      </section>
+
+          <div className="rounded-xl border border-borda p-4 flex flex-col gap-4">
+            <h3 className="text-sm font-semibold text-claro border-b border-borda pb-2">Recebimento de Fiados (Entrou dinheiro)</h3>
+            
+            {fiadosRecebidos.map((item, index) => {
+              const openFForClient = ctx.fiadosEmAberto.filter(f => f.clienteId === item.clienteId);
+              return (
+                <div key={index} className="flex flex-col gap-3 border-b border-borda/50 pb-4 last:border-0 last:pb-0 relative pt-2">
+                  {fiadosRecebidos.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => setFiadosRecebidos(prev => prev.filter((_, idx) => idx !== index))}
+                      className="absolute right-0 top-0 text-negativo hover:text-negativo-claro text-xs font-medium"
+                    >
+                      Remover
+                  </button>
+                  )}
+                  <div className="flex gap-2">
+                    <select
+                      aria-label={`Cliente do recebimento #${index + 1}`}
+                      value={item.clienteId}
+                      onChange={(e) => {
+                        const newClientId = e.target.value;
+                        setFiadosRecebidos(prev => prev.map((f, idx) => idx === index ? { ...f, clienteId: newClientId, fiadoId: null, valor: '' } : f));
+                      }}
+                      className={`${CLASSE_CAMPO} flex-1`}
+                    >
+                      <option value="">Selecione o Cliente</option>
+                      {ctx.clientesFiado.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
+                    </select>
+                    <button
+                      type="button"
+                      className="btn btn-suave p-2.5 flex items-center justify-center shrink-0"
+                      title="Cadastrar novo cliente"
+                      onClick={() => {
+                        setNovoClienteOrigem({ tipo: 'recebido', index });
+                        setModalNovoCliente(true);
+                      }}
+                    >
+                      <IconePlus />
+                    </button>
+                  </div>
+                  {item.clienteId && openFForClient.length > 0 && (
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-xs text-suave">Débito em aberto para quitar</label>
+                      <select
+                        aria-label={`Débito do cliente #${index + 1}`}
+                        value={item.fiadoId || ''}
+                        onChange={(e) => {
+                          const selectedFiadoId = e.target.value;
+                          const selectedFiado = openFForClient.find(f => f.id === selectedFiadoId);
+                          setFiadosRecebidos(prev => prev.map((r, idx) => {
+                            if (idx === index) {
+                              return {
+                                ...r,
+                                fiadoId: selectedFiadoId || null,
+                                valor: selectedFiado ? centavosParaString(selectedFiado.valor) : r.valor
+                              };
+                            }
+                            return r;
+                          }));
+                        }}
+                        className={CLASSE_CAMPO}
+                      >
+                        <option value="">Selecione o débito (opcional — preenche valor)</option>
+                        {openFForClient.map(f => (
+                          <option key={f.id} value={f.id}>
+                            {formatarDataBR(f.data)} — {formatReais(f.valor)} {f.vencimento ? `(Venc. ${formatarDataBR(f.vencimento)})` : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  {item.clienteId && openFForClient.length === 0 && (
+                    <p className="text-xs text-suave italic">Nenhum débito em aberto encontrado.</p>
+                  )}
+                  <CampoMoeda rotulo="Valor" valor={item.valor} aoMudar={(val) => setFiadosRecebidos(prev => prev.map((f, idx) => idx === index ? { ...f, valor: val } : f))} />
+                </div>
+              );
+            })}
+
+            <button
+              type="button"
+              onClick={() => setFiadosRecebidos(prev => [...prev, { clienteId: '', valor: '', fiadoId: null }])}
+              className="btn btn-suave/50 px-3 py-1.5 text-xs self-start"
+            >
+              + Adicionar outro recebimento
+            </button>
+          </div>
+        </section>
+      )}
 
       {/* Pagamentos */}
       <section className="grid gap-4 cartao p-5 sm:grid-cols-3">

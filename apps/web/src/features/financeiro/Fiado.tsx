@@ -4,11 +4,14 @@ import {
   salvarClienteFiado,
   receberFiado,
   listarContasCompletas,
+  listarClientesFiado,
+  salvarFiado,
   type FiadoEmAberto,
   type ContaCompleta,
+  type ClienteFiado,
 } from '../../data/repositorios';
 import { uuidv7 } from '../../lib/uuidv7';
-import { somar, formatReais, type Centavos } from '../../lib/money';
+import { somar, formatReais, type Centavos, parseReais } from '../../lib/money';
 import { agoraManausISO } from '../../lib/datas';
 import { useToast } from '../../components/ui/Toast';
 import { Modal } from '../../components/ui/Modal';
@@ -26,6 +29,7 @@ export function Fiado({ usuarioId }: { usuarioId: string }) {
   const toast = useToast();
   const [fiados, setFiados] = useState<FiadoEmAberto[]>([]);
   const [contas, setContas] = useState<ContaCompleta[]>([]);
+  const [clientes, setClientes] = useState<ClienteFiado[]>([]);
   const [carregando, setCarregando] = useState(true);
   const [busca, setBusca] = useState('');
 
@@ -35,6 +39,16 @@ export function Fiado({ usuarioId }: { usuarioId: string }) {
   const [contato, setContato] = useState('');
   const [salvandoCliente, setSalvandoCliente] = useState(false);
 
+  // Modal novo fiado
+  const [fiadoAberto, setFiadoAberto] = useState(false);
+  const [fiadoClienteId, setFiadoClienteId] = useState('');
+  const [fiadoValor, setFiadoValor] = useState('');
+  const [fiadoData, setFiadoData] = useState(() => {
+    return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Manaus' });
+  });
+  const [fiadoVencimento, setFiadoVencimento] = useState('');
+  const [salvandoFiado, setSalvandoFiado] = useState(false);
+
   // Modal receber
   const [aReceber, setAReceber] = useState<FiadoEmAberto | null>(null);
   const [recebendo, setRecebendo] = useState(false);
@@ -42,17 +56,24 @@ export function Fiado({ usuarioId }: { usuarioId: string }) {
   const contaCaixa = contas.find((c) => c.tipo === 'dinheiro' && c.ativo) ?? contas.find((c) => c.tipo === 'dinheiro');
 
   async function recarregar() {
-    setFiados(await listarFiadosEmAberto());
+    const [f, clis] = await Promise.all([listarFiadosEmAberto(), listarClientesFiado()]);
+    setFiados(f);
+    setClientes(clis);
   }
 
   useEffect(() => {
     let ativo = true;
     (async () => {
       try {
-        const [f, c] = await Promise.all([listarFiadosEmAberto(), listarContasCompletas()]);
+        const [f, c, clis] = await Promise.all([
+          listarFiadosEmAberto(),
+          listarContasCompletas(),
+          listarClientesFiado(),
+        ]);
         if (!ativo) return;
         setFiados(f);
         setContas(c);
+        setClientes(clis);
       } catch (e) {
         console.error(e);
         if (ativo) toast.erro('Falha ao carregar os fiados.');
@@ -94,6 +115,44 @@ export function Fiado({ usuarioId }: { usuarioId: string }) {
       toast.erro('Erro ao cadastrar o cliente.');
     } finally {
       setSalvandoCliente(false);
+    }
+  }
+
+  async function aoSalvarFiado(e: FormEvent) {
+    e.preventDefault();
+    if (!fiadoClienteId) {
+      toast.erro('Selecione o cliente.');
+      return;
+    }
+    const valorCentavos = parseReais(fiadoValor);
+    if (valorCentavos <= 0n) {
+      toast.erro('Informe um valor maior que zero.');
+      return;
+    }
+    if (!fiadoData) {
+      toast.erro('Informe a data da concessão.');
+      return;
+    }
+    setSalvandoFiado(true);
+    try {
+      await salvarFiado({
+        id: uuidv7(),
+        clienteId: fiadoClienteId,
+        valor: valorCentavos,
+        data: fiadoData,
+        vencimento: fiadoVencimento || null,
+      });
+      toast.sucesso('Fiado registrado com sucesso.');
+      setFiadoAberto(false);
+      setFiadoClienteId('');
+      setFiadoValor('');
+      setFiadoVencimento('');
+      await recarregar();
+    } catch (e) {
+      console.error(e);
+      toast.erro('Erro ao registrar o fiado.');
+    } finally {
+      setSalvandoFiado(false);
     }
   }
 
@@ -158,9 +217,14 @@ export function Fiado({ usuarioId }: { usuarioId: string }) {
         titulo="Fiado"
         subtitulo="Contas a receber — concessões abertas e baixa por recebimento"
         acao={
-          <button type="button" onClick={() => setClienteAberto(true)} className="btn btn-primario px-4 py-2 text-sm">
-            <IconePlus /> Novo cliente
-          </button>
+          <div className="flex gap-2">
+            <button type="button" onClick={() => setClienteAberto(true)} className="btn btn-suave px-4 py-2 text-sm flex items-center gap-2">
+              <IconePlus /> Novo cliente
+            </button>
+            <button type="button" onClick={() => setFiadoAberto(true)} className="btn btn-primario px-4 py-2 text-sm flex items-center gap-2">
+              <IconePlus /> Novo fiado
+            </button>
+          </div>
         }
       />
 
@@ -200,7 +264,7 @@ export function Fiado({ usuarioId }: { usuarioId: string }) {
         aberto={clienteAberto}
         aoFechar={() => setClienteAberto(false)}
         titulo="Novo cliente de fiado"
-        descricao="O fiado em si é concedido no Fechamento do dia; aqui você cadastra o cliente."
+        descricao="Cadastre o cliente para poder lançar fiados para ele."
       >
         <form onSubmit={aoSalvarCliente} className="flex flex-col gap-4">
           <Campo label="Nome" obrigatorio>
@@ -215,6 +279,64 @@ export function Fiado({ usuarioId }: { usuarioId: string }) {
             </button>
             <button type="submit" disabled={salvandoCliente} className="btn btn-primario px-4 py-2 text-sm">
               {salvandoCliente ? 'Salvando…' : 'Cadastrar'}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Modal: novo fiado */}
+      <Modal
+        aberto={fiadoAberto}
+        aoFechar={() => setFiadoAberto(false)}
+        titulo="Lançar novo fiado (Venda pendurada)"
+        descricao="Lance uma nova dívida para um cliente. Lançamentos para a data de hoje afetarão o fechamento de caixa corrente."
+      >
+        <form onSubmit={aoSalvarFiado} className="flex flex-col gap-4">
+          <Campo label="Cliente" obrigatorio>
+            <select
+              value={fiadoClienteId}
+              onChange={(e) => setFiadoClienteId(e.target.value)}
+              className={CLASSE_CAMPO}
+            >
+              <option value="">Selecione o Cliente</option>
+              {clientes.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.nome}
+                </option>
+              ))}
+            </select>
+          </Campo>
+          <Campo label="Valor (R$)" obrigatorio>
+            <input
+              inputMode="decimal"
+              className={`${CLASSE_CAMPO} numeros text-right`}
+              value={fiadoValor}
+              onChange={(e) => setFiadoValor(e.target.value)}
+              placeholder="0,00"
+            />
+          </Campo>
+          <Campo label="Concedido em" obrigatorio>
+            <input
+              type="date"
+              className={CLASSE_CAMPO}
+              value={fiadoData}
+              onChange={(e) => setFiadoData(e.target.value)}
+            />
+          </Campo>
+          <Campo label="Data de vencimento (opcional)">
+            <input
+              type="date"
+              className={CLASSE_CAMPO}
+              value={fiadoVencimento}
+              onChange={(e) => setFiadoVencimento(e.target.value)}
+            />
+          </Campo>
+          <div className="mt-2 flex justify-end gap-2">
+            <button type="button" className="btn btn-suave px-4 py-2 text-sm" onClick={() => setFiadoAberto(false)}>
+              Cancelar
+            </button>
+            <button type="submit" disabled={salvandoFiado} className="btn btn-primario px-4 py-2 text-sm">
+              {salvandoFiado ? 'Registrando…' : 'Registrar'}
             </button>
           </div>
         </form>

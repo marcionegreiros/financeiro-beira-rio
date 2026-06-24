@@ -648,10 +648,10 @@ export async function listarDespesasDoDia(data: string): Promise<DespesaDoDia[]>
   const { data: rows, error } = await supabase
     .from('movimento')
     .select(
-      'id,valor_centavos,data_hora,descricao,forma_pagamento,fechamento_id,' +
-        'conta:conta_id(nome,tipo),categoria:categoria_despesa_id(nome)',
+      'id,tipo,valor_centavos,data_hora,descricao,forma_pagamento,fechamento_id,' +
+        'conta:conta_id(nome,tipo),categoria:categoria_despesa_id(nome),funcionario:funcionario_id(nome)',
     )
-    .eq('tipo', 'despesa')
+    .in('tipo', ['despesa', 'vale', 'prolabore'])
     .gte('data_hora', inicio)
     .lt('data_hora', fim)
     .order('data_hora', { ascending: true });
@@ -659,6 +659,7 @@ export async function listarDespesasDoDia(data: string): Promise<DespesaDoDia[]>
 
   const linhas = (rows ?? []) as unknown as Array<{
     id: string;
+    tipo: string;
     valor_centavos: number;
     data_hora: string;
     descricao: string | null;
@@ -666,16 +667,30 @@ export async function listarDespesasDoDia(data: string): Promise<DespesaDoDia[]>
     fechamento_id: string | null;
     conta: { nome: string; tipo: string } | { nome: string; tipo: string }[] | null;
     categoria: RelNome;
+    funcionario: RelNome;
   }>;
 
   return linhas.map((m) => {
     const conta = Array.isArray(m.conta) ? m.conta[0] : m.conta;
     const bruto = BigInt(m.valor_centavos);
+    
+    let catNome = nomeRel(m.categoria);
+    if (!catNome) {
+      if (m.tipo === 'vale') catNome = 'Vales';
+      else if (m.tipo === 'prolabore') catNome = 'Retirada Sócio';
+    }
+
+    let desc = m.descricao;
+    const funcNome = nomeRel(m.funcionario);
+    if (m.tipo === 'vale' && funcNome) {
+      desc = desc ? `${desc} (${funcNome})` : `Vale — ${funcNome}`;
+    }
+
     return {
       id: m.id,
       valor: asCentavos(bruto < 0n ? -bruto : bruto),
-      descricao: m.descricao,
-      categoriaNome: nomeRel(m.categoria),
+      descricao: desc,
+      categoriaNome: catNome,
       contaNome: conta?.nome ?? null,
       contaTipo: conta?.tipo ?? null,
       formaPagamento: m.forma_pagamento,
@@ -695,8 +710,32 @@ export async function vincularDespesasAoFechamento(fechamentoId: string, ids: st
   if (error) throw error;
 }
 
-/** Remove uma despesa do dia (correção antes de travar o fechamento). */
+/** Remove uma despesa ou vale (e reverte status de fechamento_folha se aplicável). */
 export async function removerDespesa(id: string): Promise<void> {
+  const { data: mov, error: errMov } = await supabase
+    .from('movimento')
+    .select('tipo, funcionario_id, data_hora')
+    .eq('id', id)
+    .maybeSingle();
+
+  if (errMov) throw errMov;
+
+  if (mov && mov.tipo === 'despesa' && mov.funcionario_id) {
+    const { data: folha } = await supabase
+      .from('fechamento_folha')
+      .select('id')
+      .eq('funcionario_id', mov.funcionario_id)
+      .eq('pago_em', mov.data_hora)
+      .maybeSingle();
+
+    if (folha) {
+      await supabase
+        .from('fechamento_folha')
+        .update({ status: 'aberto', pago_em: null })
+        .eq('id', folha.id);
+    }
+  }
+
   const { error } = await supabase.from('movimento').delete().eq('id', id);
   if (error) throw error;
 }
@@ -1080,6 +1119,8 @@ export interface MovimentoLista {
   categoriaNome: string | null;
   socioNome: string | null;
   usuarioNome: string | null;
+  funcionarioId: string | null;
+  funcionarioNome: string | null;
 }
 
 type RelNome = { nome: string } | { nome: string }[] | null;
@@ -1100,7 +1141,8 @@ export async function listarMovimentos(tipos?: string[], limite = 500): Promise<
     .select(
       'id,tipo,valor_centavos,data_hora,descricao,forma_pagamento,tags,' +
         'conta:conta_id(nome),contraparte:contraparte_conta_id(nome),' +
-        'categoria:categoria_despesa_id(nome),socio:socio_id(nome),usuario:criado_por(nome)',
+        'categoria:categoria_despesa_id(nome),socio:socio_id(nome),usuario:criado_por(nome),' +
+        'funcionario:funcionario_id(id,nome)',
     )
     .order('data_hora', { ascending: false })
     .limit(limite);
@@ -1123,6 +1165,7 @@ export async function listarMovimentos(tipos?: string[], limite = 500): Promise<
     categoria: RelNome;
     socio: RelNome;
     usuario: RelNome;
+    funcionario: { id: string; nome: string } | { id: string; nome: string }[] | null;
   }>;
 
   return linhas.map((m) => ({
@@ -1138,6 +1181,8 @@ export async function listarMovimentos(tipos?: string[], limite = 500): Promise<
     categoriaNome: nomeRel(m.categoria),
     socioNome: nomeRel(m.socio),
     usuarioNome: nomeRel(m.usuario),
+    funcionarioId: m.funcionario ? (Array.isArray(m.funcionario) ? m.funcionario[0]?.id : m.funcionario.id) ?? null : null,
+    funcionarioNome: nomeRel(m.funcionario),
   }));
 }
 
@@ -1220,6 +1265,25 @@ export async function salvarClienteFiado(c: ClienteFiado): Promise<void> {
     .upsert({ id: c.id, nome: c.nome, contato: c.contato });
   if (error) throw error;
 }
+
+export async function salvarFiado(f: {
+  id: string;
+  clienteId: string;
+  valor: Centavos;
+  data: string;
+  vencimento: string | null;
+}): Promise<void> {
+  const { error } = await supabase.from('fiado').insert({
+    id: f.id,
+    cliente_id: f.clienteId,
+    valor_centavos: centavosParaNumero(f.valor),
+    data: f.data,
+    vencimento: f.vencimento,
+    status: 'aberto',
+  });
+  if (error) throw error;
+}
+
 
 export interface FiadoEmAberto {
   id: string;
@@ -1368,13 +1432,14 @@ export interface FechamentoFolha {
   totalVales: Centavos;
   aReceber: Centavos;
   status: string;
+  pagoEm?: string | null;
 }
 
 export async function listarFechamentosFolha(): Promise<FechamentoFolha[]> {
   const { data, error } = await supabase
     .from('fechamento_folha')
     .select(
-      'id, funcionario_id, competencia, salario_base_centavos, total_vales_centavos, a_receber_centavos, status, funcionario:funcionario_id(nome)',
+      'id, funcionario_id, competencia, salario_base_centavos, total_vales_centavos, a_receber_centavos, status, pago_em, funcionario:funcionario_id(nome)',
     )
     .order('competencia', { ascending: false });
   if (error) throw error;
@@ -1386,6 +1451,7 @@ export async function listarFechamentosFolha(): Promise<FechamentoFolha[]> {
     total_vales_centavos: number;
     a_receber_centavos: number;
     status: string;
+    pago_em: string | null;
     funcionario: RelNome;
   }>;
   return linhas.map((l) => ({
@@ -1397,6 +1463,7 @@ export async function listarFechamentosFolha(): Promise<FechamentoFolha[]> {
     totalVales: paraCentavos(l.total_vales_centavos),
     aReceber: paraCentavos(l.a_receber_centavos),
     status: l.status,
+    pagoEm: l.pago_em,
   }));
 }
 
@@ -1417,5 +1484,415 @@ export async function gerarFechamentoFolha(
     status: 'aberto',
   });
   if (error) throw error;
+}
+
+export async function pagarFechamentoFolha(
+  fechamentoId: string,
+  contaId: string,
+  formaPagamento: string,
+  pagoEm: string,
+  criadoPor: string,
+): Promise<void> {
+  const { data: fechamento, error: errFechamento } = await supabase
+    .from('fechamento_folha')
+    .select('funcionario_id, competencia, a_receber_centavos, funcionario:funcionario_id(nome)')
+    .eq('id', fechamentoId)
+    .single();
+
+  if (errFechamento) throw errFechamento;
+  if (!fechamento) throw new Error('Fechamento de folha não encontrado.');
+
+  const funcId = fechamento.funcionario_id;
+  const comp = fechamento.competencia;
+  const aReceberCentavos = BigInt(fechamento.a_receber_centavos);
+  const funcNome = nomeRel(fechamento.funcionario) ?? 'Funcionário';
+
+  const [a, m] = comp.split('-');
+  const compLabel = `${m}/${a}`;
+
+  const { error: errUpdate } = await supabase
+    .from('fechamento_folha')
+    .update({
+      status: 'pago',
+      pago_em: pagoEm,
+    })
+    .eq('id', fechamentoId);
+
+  if (errUpdate) throw errUpdate;
+
+  const { error: errMov } = await supabase.from('movimento').insert({
+    id: uuidv7(),
+    tipo: 'despesa',
+    conta_id: contaId,
+    valor_centavos: -Number(aReceberCentavos),
+    data_hora: pagoEm,
+    funcionario_id: funcId,
+    forma_pagamento: formaPagamento,
+    descricao: `Pagamento Salário — ${funcNome} ref. ${compLabel}`,
+    categoria_despesa_id: '00000000-0000-7000-8000-000000000022',
+    criado_por: criadoPor,
+  });
+
+  if (errMov) throw errMov;
+}
+
+/** Obtém a soma dos vales de todos os funcionários em uma competência, agrupada por funcionário ID. */
+export async function obterValesFuncionariosMes(competencia: string): Promise<Record<string, Centavos>> {
+  const inicio = competencia; // YYYY-MM-01
+  const partes = inicio.split('-');
+  const y = Number(partes[0]);
+  const m = Number(partes[1]);
+  const prox = m === 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, '0')}-01`;
+
+  const { data, error } = await supabase
+    .from('movimento')
+    .select('funcionario_id, valor_centavos')
+    .eq('tipo', 'vale')
+    .gte('data_hora', `${inicio}T00:00:00-04:00`)
+    .lt('data_hora', `${prox}T00:00:00-04:00`);
+
+  if (error) throw error;
+
+  const mapa: Record<string, Centavos> = {};
+  for (const v of (data ?? []) as Array<{ funcionario_id: string; valor_centavos: number }>) {
+    const fid = v.funcionario_id;
+    if (!fid) continue;
+    const valor = BigInt(Math.abs(v.valor_centavos));
+    mapa[fid] = asCentavos((mapa[fid] ?? 0n) + valor);
+  }
+  return mapa;
+}
+
+export interface ResumoFechamentoCompleto {
+  id: string;
+  data: string;
+  responsavelNome: string | null;
+  vendaFisica: Centavos;
+  pix: Centavos;
+  debito: Centavos;
+  credito: Centavos;
+  dinheiro: Centavos;
+  despesa: Centavos; // despesas em dinheiro
+  esperado: Centavos;
+  contado: Centavos;
+  diferenca: Centavos;
+  aDepositar: Centavos;
+  fiadoConcedido: Centavos;
+  fiadoRecebido: Centavos;
+}
+
+export async function obterDadosUltimoFechamento(): Promise<ResumoFechamentoCompleto | null> {
+  const { data: fechRaw, error: e1 } = await supabase
+    .from('fechamento')
+    .select('id, data, responsavel:responsavel_id(nome), status')
+    .eq('status', 'travado')
+    .order('data', { ascending: false })
+    .limit(1);
+
+  if (e1 || !fechRaw || fechRaw.length === 0) return null;
+  const ultimo = fechRaw[0];
+  const fechId = ultimo.id;
+
+  const [
+    { data: movs, error: e2 },
+    { data: fiados, error: e3 },
+    { data: configRaw, error: eCfg }
+  ] = await Promise.all([
+    supabase.from('movimento').select('tipo, valor_centavos, forma_pagamento').eq('fechamento_id', fechId),
+    supabase.from('fiado').select('valor_centavos').eq('fechamento_id', fechId),
+    supabase.from('config').select('chave, valor_json')
+  ]);
+
+  if (e2 || e3 || eCfg || !movs) return null;
+
+  const config = new Map(
+    ((configRaw ?? []) as Array<{ chave: string; valor_json: unknown }>).map((c) => [
+      c.chave,
+      c.valor_json,
+    ]),
+  );
+  const trocoFixo = paraCentavos(Number(config.get('troco_fixo_centavos') ?? 0));
+
+  let cashSales = 0n;
+  let pix = 0n;
+  let debitoNet = 0n;
+  let debitoTaxa = 0n;
+  let creditoNet = 0n;
+  let creditoTaxa = 0n;
+  let fiadoRecebido = 0n;
+  let diferenca = 0n;
+  let despesaDinheiro = 0n;
+  
+  for (const m of movs) {
+    const val = BigInt(m.valor_centavos);
+    const absVal = val < 0n ? -val : val;
+
+    if (m.tipo === 'recebimento_venda') {
+      if (m.forma_pagamento === 'dinheiro') cashSales = val;
+      else if (m.forma_pagamento === 'pix') pix = val;
+      else if (m.forma_pagamento === 'debito') debitoNet = val;
+      else if (m.forma_pagamento === 'credito') creditoNet = val;
+    } else if (m.tipo === 'taxa_cartao') {
+      if (m.forma_pagamento === 'debito') debitoTaxa = absVal;
+      else if (m.forma_pagamento === 'credito') creditoTaxa = absVal;
+    } else if (m.tipo === 'recebimento_fiado') {
+      fiadoRecebido += val;
+    } else if (m.tipo === 'diferenca_caixa') {
+      diferenca = val;
+    } else if (['despesa', 'prolabore', 'vale'].includes(m.tipo)) {
+      if (m.forma_pagamento === 'dinheiro') {
+        despesaDinheiro += absVal;
+      }
+    }
+  }
+
+  let fiadoConcedido = 0n;
+  for (const f of fiados ?? []) {
+    fiadoConcedido += BigInt(f.valor_centavos);
+  }
+
+  const debitoGross = debitoNet + debitoTaxa;
+  const creditoGross = creditoNet + creditoTaxa;
+  const vendaFisica = cashSales + pix + debitoGross + creditoGross + fiadoConcedido;
+
+  const esperado = cashSales - despesaDinheiro + fiadoRecebido + trocoFixo;
+  const contado = esperado + diferenca;
+  
+  const aDepositarBruto = contado - trocoFixo;
+  const aDepositar = aDepositarBruto < 0n ? 0n : aDepositarBruto;
+
+  const resp = Array.isArray(ultimo.responsavel) ? ultimo.responsavel[0] : ultimo.responsavel;
+
+  return {
+    id: fechId,
+    data: ultimo.data,
+    responsavelNome: resp?.nome ?? null,
+    vendaFisica: asCentavos(vendaFisica),
+    pix: asCentavos(pix),
+    debito: asCentavos(debitoGross),
+    credito: asCentavos(creditoGross),
+    dinheiro: asCentavos(cashSales),
+    despesa: asCentavos(despesaDinheiro),
+    esperado: asCentavos(esperado),
+    contado: asCentavos(contado),
+    diferenca: asCentavos(diferenca),
+    aDepositar: asCentavos(aDepositar),
+    fiadoConcedido: asCentavos(fiadoConcedido),
+    fiadoRecebido: asCentavos(fiadoRecebido),
+  };
+}
+
+export interface DespesaCategoriaResumo {
+  categoriaNome: string;
+  valor: number; // em Reais para recharts
+}
+
+export async function obterDespesasPorCategoriaMes(dataBase: string): Promise<DespesaCategoriaResumo[]> {
+  const inicioMes = dataBase.slice(0, 8) + '01';
+  
+  const { data, error } = await supabase
+    .from('movimento')
+    .select('tipo, valor_centavos, categoria:categoria_despesa_id(nome)')
+    .in('tipo', ['despesa', 'vale', 'prolabore'])
+    .gte('data_hora', `${inicioMes}T00:00:00-04:00`)
+    .lte('data_hora', `${dataBase}T23:59:59-04:00`);
+    
+  if (error || !data) return [];
+  
+  const soma = new Map<string, bigint>();
+  for (const m of data as any[]) {
+    let catNome = m.categoria?.nome;
+    if (!catNome) {
+      if (m.tipo === 'vale') catNome = 'Vales';
+      else if (m.tipo === 'prolabore') catNome = 'Retirada Sócio';
+      else catNome = 'Geral';
+    }
+    const val = BigInt(m.valor_centavos);
+    const absVal = val < 0n ? -val : val;
+    soma.set(catNome, (soma.get(catNome) ?? 0n) + absVal);
+  }
+  
+  return Array.from(soma.entries()).map(([categoriaNome, valor]) => ({
+    categoriaNome,
+    valor: Number(valor) / 100,
+  }));
+}
+
+export async function obterVendasHistorico(hoje: string, dias = 90): Promise<{ data: string; valor: number }[]> {
+  const dataLimite = new Date(hoje);
+  dataLimite.setDate(dataLimite.getDate() - dias);
+  const dataLimiteStr = dataLimite.toLocaleDateString('en-CA', { timeZone: 'America/Manaus' });
+
+  const { data: fechamentos } = await supabase
+    .from('fechamento')
+    .select('id, data')
+    .gte('data', dataLimiteStr)
+    .lte('data', hoje)
+    .eq('status', 'travado')
+    .order('data', { ascending: true });
+
+  if (!fechamentos || fechamentos.length === 0) return [];
+
+  const ids = fechamentos.map((f) => f.id);
+
+  const [
+    { data: movs },
+    { data: fiados }
+  ] = await Promise.all([
+    supabase
+      .from('movimento')
+      .select('fechamento_id, valor_centavos')
+      .in('fechamento_id', ids)
+      .eq('tipo', 'recebimento_venda'),
+    supabase
+      .from('fiado')
+      .select('fechamento_id, valor_centavos')
+      .in('fechamento_id', ids)
+  ]);
+
+  const vendasDiariasMap = new Map<string, bigint>();
+  for (const f of fechamentos) {
+    let valorDia = 0n;
+    const movsDoDia = (movs ?? []).filter((m) => m.fechamento_id === f.id);
+    const fiadosDoDia = (fiados ?? []).filter((fi) => fi.fechamento_id === f.id);
+    
+    for (const m of movsDoDia) valorDia += BigInt(m.valor_centavos);
+    for (const fi of fiadosDoDia) valorDia += BigInt(fi.valor_centavos);
+    
+    vendasDiariasMap.set(f.data, valorDia);
+  }
+
+  return Array.from(vendasDiariasMap.entries())
+    .map(([data, valor]) => ({
+      data,
+      valor: Number(valor) / 100,
+    }))
+    .sort((a, b) => a.data.localeCompare(b.data));
+}
+
+export interface CapitalHistorico {
+  data: string;
+  operacional: number;
+  total: number;
+}
+
+export async function obterHistoricoCapital(
+  hoje: string,
+  capitalAtual: { operacional: Centavos; total: Centavos },
+  limite = 15
+): Promise<CapitalHistorico[]> {
+  const { data: fechamentos } = await supabase
+    .from('fechamento')
+    .select('id, data')
+    .eq('status', 'travado')
+    .order('data', { ascending: false })
+    .limit(limite);
+
+  const formatDataLabel = (dataStr: string) => {
+    const partes = dataStr.split('-');
+    return partes.length === 3 ? `${partes[2]}/${partes[1]}` : dataStr;
+  };
+
+  if (!fechamentos || fechamentos.length === 0) {
+    return [{
+      data: formatDataLabel(hoje),
+      operacional: Number(capitalAtual.operacional) / 100,
+      total: Number(capitalAtual.total) / 100,
+    }];
+  }
+
+  const ids = fechamentos.map((f) => f.id);
+
+  const [
+    { data: movs },
+    { data: fiados }
+  ] = await Promise.all([
+    supabase
+      .from('movimento')
+      .select('fechamento_id, tipo, valor_centavos, forma_pagamento')
+      .in('fechamento_id', ids),
+    supabase
+      .from('fiado')
+      .select('fechamento_id, valor_centavos')
+      .in('fechamento_id', ids)
+  ]);
+
+  const netChanges = new Map<string, { operacional: bigint; total: bigint }>();
+
+  for (const f of fechamentos) {
+    const movsDoDia = (movs ?? []).filter((m) => m.fechamento_id === f.id);
+    const fiadosDoDia = (fiados ?? []).filter((fi) => fi.fechamento_id === f.id);
+
+    let cashSales = 0n;
+    let pix = 0n;
+    let debitoNet = 0n;
+    let debitoTaxa = 0n;
+    let creditoNet = 0n;
+    let creditoTaxa = 0n;
+    let fiadoConcedido = 0n;
+    let despesasDinheiro = 0n;
+    let diferenca = 0n;
+    let aportesAumento = 0n;
+
+    for (const m of movsDoDia) {
+      const val = BigInt(m.valor_centavos);
+      const absVal = val < 0n ? -val : val;
+
+      if (m.tipo === 'recebimento_venda') {
+        if (m.forma_pagamento === 'dinheiro') cashSales = val;
+        else if (m.forma_pagamento === 'pix') pix = val;
+        else if (m.forma_pagamento === 'debito') debitoNet = val;
+        else if (m.forma_pagamento === 'credito') creditoNet = val;
+      } else if (m.tipo === 'taxa_cartao') {
+        if (m.forma_pagamento === 'debito') debitoTaxa = absVal;
+        else if (m.forma_pagamento === 'credito') creditoTaxa = absVal;
+      } else if (m.tipo === 'diferenca_caixa') {
+        diferenca = val;
+      } else if (['despesa', 'prolabore', 'vale'].includes(m.tipo)) {
+        if (m.forma_pagamento === 'dinheiro') {
+          despesasDinheiro += absVal;
+        }
+      } else if (m.tipo === 'aporte_aumento') {
+        aportesAumento += val;
+      }
+    }
+
+    for (const fi of fiadosDoDia) {
+      fiadoConcedido += BigInt(fi.valor_centavos);
+    }
+
+    const debitoGross = debitoNet + debitoTaxa;
+    const creditoGross = creditoNet + creditoTaxa;
+    const vendaFisica = cashSales + pix + debitoGross + creditoGross + fiadoConcedido;
+
+    const netChangeTotal = vendaFisica - despesasDinheiro + diferenca;
+    const netChangeOperacional = netChangeTotal - aportesAumento;
+
+    netChanges.set(f.data, { operacional: netChangeOperacional, total: netChangeTotal });
+  }
+
+  const historico: CapitalHistorico[] = [];
+  let capOp = BigInt(capitalAtual.operacional);
+  let capTot = BigInt(capitalAtual.total);
+
+  historico.push({
+    data: formatDataLabel(hoje),
+    operacional: Number(capOp) / 100,
+    total: Number(capTot) / 100,
+  });
+
+  for (const f of fechamentos) {
+    const change = netChanges.get(f.data) ?? { operacional: 0n, total: 0n };
+    capOp -= change.operacional;
+    capTot -= change.total;
+
+    historico.push({
+      data: formatDataLabel(f.data),
+      operacional: Number(capOp) / 100,
+      total: Number(capTot) / 100,
+    });
+  }
+
+  return historico.reverse();
 }
 

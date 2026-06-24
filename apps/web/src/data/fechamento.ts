@@ -14,11 +14,11 @@ import {
   quantidadeParaNumero,
 } from './conversao';
 import { precoVigenteEm, custoVigenteEm, type RegistroVigencia } from '../domain/precos';
-import { hojeManaus, agoraManausISO } from '../lib/datas';
+import { hojeManaus, agoraManausISO, limitesDoDiaManaus } from '../lib/datas';
 import { uuidv7 } from '../lib/uuidv7';
 import { asCentavos, type Centavos, parseReais, somar } from '../lib/money';
 import { asMililitros, asQuantidade, type Mililitros, type Quantidade } from '../domain/tipos';
-import { listarDespesasDoDia, type DespesaDoDia } from './repositorios';
+import { listarDespesasDoDia, type DespesaDoDia, listarFiadosEmAberto, type FiadoEmAberto } from './repositorios';
 
 export interface BombaCtx {
   id: string;
@@ -46,6 +46,7 @@ export interface ContextoFechamento {
   produtos: ProdutoCtx[]; // Apenas contagem
   produtosIndividuais: ProdutoCtx[]; // Apenas individual
   clientesFiado: { id: string; nome: string }[];
+  fiadosEmAberto: FiadoEmAberto[];
   trocoFixo: Centavos;
   taxaDebito: { percentualBp: bigint; fixa: Centavos };
   taxaCredito: { percentualBp: bigint; fixa: Centavos };
@@ -62,10 +63,8 @@ export interface ContextoFechamento {
     pix: string;
     debito: string;
     credito: string;
-    fiadoConClienteId: string;
-    fiadoConValor: string;
-    fiadoRecClienteId: string;
-    fiadoRecValor: string;
+    fiadosConcedidos: { id?: string; clienteId: string; valor: string; vencimento: string | null }[];
+    fiadosRecebidos: { id?: string; clienteId: string; valor: string; fiadoId: string | null }[];
     contado: string;
     observacao: string;
   } | undefined;
@@ -98,6 +97,7 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
     { data: contasRaw, error: eC },
     { data: clientesRaw, error: eCli },
     { data: anteriorRaw },
+    fiadosEmAberto,
   ] = await Promise.all([
     supabase.from('fechamento').select('id, status').eq('data', data).maybeSingle(),
     supabase
@@ -122,6 +122,7 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
       .order('data', { ascending: false })
       .limit(1)
       .maybeSingle(),
+    listarFiadosEmAberto(),
   ]);
   for (const e of [eB, ePC, eP, ePP, eCfg, eC, eCli]) if (e) throw e;
 
@@ -228,94 +229,120 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
     .filter((d) => d.formaPagamento === 'dinheiro')
     .reduce((acc, d) => acc + d.valor, 0n);
 
+  const { inicio: inicioDia, fim: fimDia } = limitesDoDiaManaus(data);
+
   let valoresSalvos: ContextoFechamento['valoresSalvos'] = undefined;
+
+  const contagens: Record<string, string> = {};
+  const leituras: Record<string, string> = {};
+  const vendasIndividuais: Record<string, string> = {};
+  let pix = '';
+  let debito = '';
+  let credito = '';
+  let contado = '';
+  let observacao = '';
+
+  let cSalvas: any[] = [];
+  let lSalvas: any[] = [];
+  let vSalvas: any[] = [];
+  let fSalvos: any[] = [];
+  let mSalvos: any[] = [];
+  let fechInfo: any = null;
 
   if (fechExistente) {
     const [
-      { data: cSalvas },
-      { data: lSalvas },
-      { data: vSalvas },
-      { data: fSalvos },
-      { data: mSalvos },
-      { data: fechInfo }
+      rC, rL, rV, rF, rM, rInfo
     ] = await Promise.all([
       supabase.from('contagem_produto').select('produto_id, quantidade').eq('fechamento_id', fechExistente.id),
       supabase.from('leitura_bomba').select('bomba_id, leitura').eq('fechamento_id', fechExistente.id),
       supabase.from('venda_avulsa').select('produto_id, quantidade, valor_centavos').eq('fechamento_id', fechExistente.id),
-      supabase.from('fiado').select('cliente_id, valor_centavos, status').eq('fechamento_id', fechExistente.id),
-      supabase.from('movimento').select('*').eq('fechamento_id', fechExistente.id),
+      supabase.from('fiado')
+        .select('id, cliente_id, valor_centavos, status, vencimento')
+        .or(`fechamento_id.eq.${fechExistente.id},and(data.eq.${data},fechamento_id.is.null)`),
+      supabase.from('movimento')
+        .select('*, fiado:fiado_id(cliente_id)')
+        .or(`fechamento_id.eq.${fechExistente.id},and(tipo.eq.recebimento_fiado,data_hora.gte.${inicioDia},data_hora.lt.${fimDia})`),
       supabase.from('fechamento').select('observacao').eq('id', fechExistente.id).maybeSingle()
     ]);
+    cSalvas = rC.data ?? [];
+    lSalvas = rL.data ?? [];
+    vSalvas = rV.data ?? [];
+    fSalvos = rF.data ?? [];
+    mSalvos = rM.data ?? [];
+    fechInfo = rInfo.data;
+  } else {
+    const [rF, rM] = await Promise.all([
+      supabase.from('fiado')
+        .select('id, cliente_id, valor_centavos, status, vencimento')
+        .eq('data', data)
+        .is('fechamento_id', null),
+      supabase.from('movimento')
+        .select('*, fiado:fiado_id(cliente_id)')
+        .eq('tipo', 'recebimento_fiado')
+        .gte('data_hora', inicioDia)
+        .lt('data_hora', fimDia)
+    ]);
+    fSalvos = rF.data ?? [];
+    mSalvos = rM.data ?? [];
+  }
 
-    const contagens: Record<string, string> = {};
-    const leituras: Record<string, string> = {};
-    const vendasIndividuais: Record<string, string> = {};
+  for (const c of cSalvas) contagens[c.produto_id] = String(c.quantidade).replace('.', ',');
+  for (const l of lSalvas) leituras[l.bomba_id] = String(l.leitura).replace('.', ',');
+  for (const v of vSalvas) vendasIndividuais[v.produto_id] = String(v.quantidade).replace('.', ',');
 
-    for (const c of cSalvas ?? []) contagens[c.produto_id] = String(c.quantidade).replace('.', ',');
-    for (const l of lSalvas ?? []) leituras[l.bomba_id] = String(l.leitura).replace('.', ',');
-    for (const v of vSalvas ?? []) vendasIndividuais[v.produto_id] = String(v.quantidade).replace('.', ',');
+  let debitoTaxa = 0n;
+  let creditoTaxa = 0n;
+  let oldCashSales = 0n;
+  let oldDiferenca = 0n;
+  let recebimentosFiadoDinheiro = 0n;
 
-    let pix = '';
-    let debito = '';
-    let credito = '';
-    let fiadoConClienteId = '';
-    let fiadoConValor = '';
-    let fiadoRecClienteId = '';
-    let fiadoRecValor = '';
-    let contado = '';
-
-    let debitoTaxa = 0n;
-    let creditoTaxa = 0n;
-    let oldCashSales = 0n;
-    let oldDiferenca = 0n;
-    let recebimentosFiadoDinheiro = 0n;
-
-    for (const m of mSalvos ?? []) {
-      if (m.tipo === 'recebimento_venda') {
-        if (m.forma_pagamento === 'pix') pix = centavosParaString(m.valor_centavos);
-        if (m.forma_pagamento === 'debito') debito = centavosParaString(m.valor_centavos);
-        if (m.forma_pagamento === 'credito') credito = centavosParaString(m.valor_centavos);
-        if (m.forma_pagamento === 'dinheiro') oldCashSales = BigInt(m.valor_centavos);
-      } else if (m.tipo === 'taxa_cartao') {
-        if (m.descricao?.includes('débito')) debitoTaxa = -BigInt(m.valor_centavos);
-        if (m.descricao?.includes('crédito')) creditoTaxa = -BigInt(m.valor_centavos);
-      } else if (m.tipo === 'recebimento_fiado') {
-        fiadoRecValor = centavosParaString(m.valor_centavos);
-        recebimentosFiadoDinheiro = BigInt(m.valor_centavos);
-      } else if (m.tipo === 'diferenca_caixa') {
-        oldDiferenca = BigInt(m.valor_centavos);
-      }
+  for (const m of mSalvos) {
+    if (m.tipo === 'recebimento_venda') {
+      if (m.forma_pagamento === 'pix') pix = centavosParaString(m.valor_centavos);
+      if (m.forma_pagamento === 'debito') debito = centavosParaString(m.valor_centavos);
+      if (m.forma_pagamento === 'credito') credito = centavosParaString(m.valor_centavos);
+      if (m.forma_pagamento === 'dinheiro') oldCashSales = BigInt(m.valor_centavos);
+    } else if (m.tipo === 'taxa_cartao') {
+      if (m.descricao?.includes('débito')) debitoTaxa = -BigInt(m.valor_centavos);
+      if (m.descricao?.includes('crédito')) creditoTaxa = -BigInt(m.valor_centavos);
+    } else if (m.tipo === 'recebimento_fiado') {
+      recebimentosFiadoDinheiro += BigInt(m.valor_centavos);
+    } else if (m.tipo === 'diferenca_caixa') {
+      oldDiferenca = BigInt(m.valor_centavos);
     }
+  }
 
-    // Reconstruct card gross
-    if (debito) debito = centavosParaString(Number(parseReais(debito) + debitoTaxa));
-    if (credito) credito = centavosParaString(Number(parseReais(credito) + creditoTaxa));
+  // Reconstruct card gross
+  if (debito) debito = centavosParaString(Number(parseReais(debito) + debitoTaxa));
+  if (credito) credito = centavosParaString(Number(parseReais(credito) + creditoTaxa));
 
-    // Fiados concedidos
-    const fCon = (fSalvos ?? []).find(f => f.status === 'aberto');
-    if (fCon) {
-      fiadoConClienteId = fCon.cliente_id;
-      fiadoConValor = centavosParaString(fCon.valor_centavos);
-    }
+  const fiadosConcedidos = fSalvos.map((f) => ({
+    id: f.id,
+    clienteId: f.cliente_id,
+    valor: centavosParaString(f.valor_centavos),
+    vencimento: f.vencimento,
+  }));
 
-    const mFiRec = (mSalvos ?? []).find(m => m.tipo === 'recebimento_fiado');
-    if (mFiRec) {
-      const { data: fRecInfo } = await supabase
-        .from('fiado')
-        .select('cliente_id')
-        .eq('fechamento_id', fechExistente.id)
-        .eq('status', 'pago')
-        .limit(1)
-        .maybeSingle();
-      fiadoRecClienteId = fRecInfo?.cliente_id ?? '';
-    }
+  const fiadosRecebidos = mSalvos
+    .filter((m) => m.tipo === 'recebimento_fiado')
+    .map((m) => {
+      const fInfo = m.fiado as { cliente_id: string } | null;
+      return {
+        id: m.id,
+        clienteId: fInfo?.cliente_id ?? '',
+        valor: centavosParaString(m.valor_centavos),
+        fiadoId: m.fiado_id || null,
+      };
+    });
 
-    // Reconstrói o "contado" = esperado + diferença. As despesas em dinheiro vêm
-    // da lista do dia (mesma fonte que o cálculo ao vivo usa), garantindo casamento.
+  if (fechExistente) {
     const esperado = oldCashSales - despesasDinheiroDia + recebimentosFiadoDinheiro + trocoFixo;
     const contadoVal = esperado + oldDiferenca;
     contado = centavosParaString(contadoVal);
+    observacao = fechInfo?.observacao ?? '';
+  }
 
+  if (fechExistente || fiadosConcedidos.length > 0 || fiadosRecebidos.length > 0) {
     valoresSalvos = {
       leituras,
       contagens,
@@ -323,12 +350,10 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
       pix,
       debito,
       credito,
-      fiadoConClienteId,
-      fiadoConValor,
-      fiadoRecClienteId,
-      fiadoRecValor,
+      fiadosConcedidos,
+      fiadosRecebidos,
       contado,
-      observacao: fechInfo?.observacao ?? '',
+      observacao,
     };
   }
 
@@ -341,6 +366,7 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
     produtos,
     produtosIndividuais,
     clientesFiado,
+    fiadosEmAberto,
     trocoFixo,
     taxaDebito,
     taxaCredito,
@@ -467,7 +493,7 @@ export async function confirmarFechamento(r: ResumoConfirmacao): Promise<string>
       supabase.from('leitura_bomba').delete().eq('fechamento_id', fechamentoId),
       supabase.from('venda_avulsa').delete().eq('fechamento_id', fechamentoId),
       supabase.from('entrada_mercadoria').delete().eq('fechamento_id', fechamentoId),
-      supabase.from('fiado').delete().eq('fechamento_id', fechamentoId),
+      supabase.from('fiado').delete().or(`fechamento_id.eq.${fechamentoId},and(data.eq.${r.data},fechamento_id.is.null)`),
       supabase.from('movimento').delete().eq('fechamento_id', fechamentoId).neq('tipo', 'despesa'),
     ]);
     if (eDelC) throw eDelC;
@@ -489,6 +515,14 @@ export async function confirmarFechamento(r: ResumoConfirmacao): Promise<string>
       travado_em: agora,
     });
     if (eFech) throw eFech;
+
+    // Delete pre-existing fiados created without fechamento_id for this day
+    const { error: eDelFia } = await supabase
+      .from('fiado')
+      .delete()
+      .eq('data', r.data)
+      .is('fechamento_id', null);
+    if (eDelFia) throw eDelFia;
   }
 
   const contagens = r.contagens.map((c) => ({
@@ -633,15 +667,49 @@ export async function confirmarFechamento(r: ResumoConfirmacao): Promise<string>
       valor_centavos: centavosParaNumero(r.diferenca),
       descricao: 'Diferença de caixa',
     });
+  // Process received fiados (payments)
+  const fiadosRecebidosUpdates: Promise<any>[] = [];
   for (const f of r.fiadosRecebidos) {
     if (f.valor > 0n) {
+      let fiadoId = (f as any).fiadoId;
+
+      // If no specific fiadoId is selected, try to find the oldest open fiado for this client
+      if (!fiadoId) {
+        const { data: openF } = await supabase
+          .from('fiado')
+          .select('id')
+          .eq('cliente_id', f.clienteId)
+          .eq('status', 'aberto')
+          .order('data', { ascending: true })
+          .limit(1)
+          .maybeSingle();
+        if (openF) {
+          fiadoId = openF.id;
+        }
+      }
+
+      // Add movement linked to the fiado_id
       add({
         tipo: 'recebimento_fiado',
         conta_id: r.contaCaixaId,
         valor_centavos: centavosParaNumero(f.valor),
         forma_pagamento: 'dinheiro',
         descricao: 'Recebimento de fiado',
-      });
+        fiado_id: fiadoId || undefined,
+      } as any);
+
+      // Update the fiado status to 'pago'
+      if (fiadoId) {
+        fiadosRecebidosUpdates.push(
+          (async () => {
+            const { error } = await supabase
+              .from('fiado')
+              .update({ status: 'pago' })
+              .eq('id', fiadoId);
+            if (error) throw error;
+          })()
+        );
+      }
     }
   }
 
@@ -669,6 +737,10 @@ export async function confirmarFechamento(r: ResumoConfirmacao): Promise<string>
   if (eVI) throw eVI;
   if (eEnt) throw eEnt;
   if (eFia) throw eFia;
+
+  if (fiadosRecebidosUpdates.length > 0) {
+    await Promise.all(fiadosRecebidosUpdates);
+  }
 
   // Liga as despesas do dia a este fechamento (auditoria + recálculo em cascata).
   if (r.despesaIds.length > 0) {
@@ -709,6 +781,22 @@ export async function reabrirFechamento(
   // We DO NOT delete the other inputs like contagem_produto, leitura_bomba, and venda_avulsa
   // because we want to preserve them for the manager to edit.
   // However, we do delete the financial movements generated by the locking of this day:
+  const { data: movsRec } = await supabase
+    .from('movimento')
+    .select('fiado_id')
+    .eq('fechamento_id', fechamentoId)
+    .eq('tipo', 'recebimento_fiado')
+    .not('fiado_id', 'is', null);
+
+  if (movsRec && movsRec.length > 0) {
+    const fiadoIds = movsRec.map((m) => m.fiado_id);
+    const { error: eRestore } = await supabase
+      .from('fiado')
+      .update({ status: 'aberto' })
+      .in('id', fiadoIds);
+    if (eRestore) throw eRestore;
+  }
+
   const { error: eM } = await supabase.from('movimento').delete().eq('fechamento_id', fechamentoId);
   if (eM) throw eM;
 
