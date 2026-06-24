@@ -163,7 +163,7 @@ export function Painel() {
 
   // Calcula estatísticas básicas das vendas
   const totalVendasMes = dados?.vendas.vendasDiarias.reduce((acc, curr) => acc + curr.valor, 0) || 0;
-  const diasComVenda = dados?.vendas.vendasDiarias.length || 1;
+  const diasCom Venda = dados?.vendas.vendasDiarias.length || 1;
   const mediaDiaria = totalVendasMes / diasComVenda;
   const picoFaturamento = dados?.vendas.vendasDiarias.length
     ? Math.max(...dados.vendas.vendasDiarias.map((d) => d.valor))
@@ -194,204 +194,231 @@ export function Painel() {
   const mediaDiariaFiltrada = useMemo(() => totalVendasFiltradas / (vendasFiltradas.length || 1), [totalVendasFiltradas, vendasFiltradas]);
 
   return (
-    <main className="flex flex-col gap-8">
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-ambar flex items-center gap-1.5">
-            <span className="h-1.5 w-1.5 rounded-full bg-ambar animate-pulse" />
-            Pontão Beira Rio
-          </p>
-          <h1 className="mt-1 font-display text-3xl font-bold tracking-tight text-claro">Painel de Controle</h1>
-          <p className="mt-1 text-xs text-suave">
-            Dados operacionais apurados até {new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Manaus', day: '2-digit', month: 'long', year: 'numeric' })}
-          </p>
-        </div>
+    <main className="grid gap-8 lg:grid-cols-3 items-start">
+      {/* Coluna Esquerda Operacional (Sempre no canto superior esquerdo em telas grandes) */}
+      <div className="flex flex-col gap-6 lg:col-span-1">
         {dados && (
-          <div className="flex p-0.5 rounded-xl border border-borda bg-ardosia/50 backdrop-blur-sm shadow-[var(--sombra-sm)] select-none">
-            <button
-              type="button"
-              onClick={() => setModoCapitalTotal(false)}
-              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all duration-200 cursor-pointer ${
-                !modoCapitalTotal
-                  ? 'bg-ambar text-sobreacento shadow-sm shadow-ambar/20'
-                  : 'text-suave hover:text-claro'
-              }`}
-            >
-              Capital Operacional
-            </button>
-            <button
-              type="button"
-              onClick={() => setModoCapitalTotal(true)}
-              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all duration-200 cursor-pointer ${
-                modoCapitalTotal
-                  ? 'bg-ambar text-sobreacento shadow-sm shadow-ambar/20'
-                  : 'text-suave hover:text-claro'
-              }`}
-            >
-              Capital Total
-            </button>
+          <>
+            {/* Tanques */}
+            <section className="cartao flex flex-col p-6">
+              <div className="mb-5">
+                <h2 className="font-display text-lg font-bold text-claro">Tanques de Combustível</h2>
+                <p className="text-xs text-suave">Nível físico na última medição de régua</p>
+              </div>
+              <div className="flex flex-1 items-center justify-around gap-4 flex-wrap py-2">
+                {dados.tanques.map((t) => (
+                  <MedidorTanque
+                    key={t.id}
+                    nome={t.nome}
+                    combustivel={t.combustivel}
+                    nivel={t.nivel}
+                    capacidade={t.capacidade}
+                    nivelAlerta={t.nivelAlerta}
+                  />
+                ))}
+              </div>
+            </section>
+
+            {/* Painel de Contas */}
+            <PainelContas saldos={dados.saldosContas} />
+          </>
+        )}
+      </div>
+
+      {/* Coluna Direita (Header, Banners, KPIs, Gráficos) */}
+      <div className="flex flex-col gap-6 lg:col-span-2">
+        <header className="flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-ambar flex items-center gap-1.5">
+              <span className="h-1.5 w-1.5 rounded-full bg-ambar animate-pulse" />
+              Pontão Beira Rio
+            </p>
+            <h1 className="mt-1 font-display text-3xl font-bold tracking-tight text-claro">Painel de Controle</h1>
+            <p className="mt-1 text-xs text-suave">
+              Dados operacionais apurados até {new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Manaus', day: '2-digit', month: 'long', year: 'numeric' })}
+            </p>
+          </div>
+          {dados && (
+            <div className="flex p-0.5 rounded-xl border border-borda bg-ardosia/50 backdrop-blur-sm shadow-[var(--sombra-sm)] select-none">
+              <button
+                type="button"
+                onClick={() => setModoCapitalTotal(false)}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all duration-200 cursor-pointer ${
+                  !modoCapitalTotal
+                    ? 'bg-ambar text-sobreacento shadow-sm shadow-ambar/20'
+                    : 'text-suave hover:text-claro'
+                }`}
+              >
+                Capital Operacional
+              </button>
+              <button
+                type="button"
+                onClick={() => setModoCapitalTotal(true)}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all duration-200 cursor-pointer ${
+                  modoCapitalTotal
+                    ? 'bg-ambar text-sobreacento shadow-sm shadow-ambar/20'
+                    : 'text-suave hover:text-claro'
+                }`}
+              >
+                Capital Total
+              </button>
+            </div>
+          )}
+        </header>
+
+        {erro && (
+          <p className="rounded-xl border border-negativo/30 bg-negativo/10 p-4 text-sm font-medium text-negativo">
+            {erro}
+          </p>
+        )}
+
+        {!dados && !erro && (
+          <div className="grid gap-4 sm:grid-cols-3">
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="cartao h-[104px] animate-pulse opacity-60" />
+            ))}
           </div>
         )}
-      </header>
 
-      {erro && (
-        <p className="rounded-xl border border-negativo/30 bg-negativo/10 p-4 text-sm font-medium text-negativo">
-          {erro}
-        </p>
-      )}
-
-      {!dados && !erro && (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {[0, 1, 2, 3].map((i) => (
-            <div key={i} className="cartao h-[104px] animate-pulse opacity-60" />
-          ))}
-        </div>
-      )}
-
-      {dados && (
-        <>
-          {/* Caixa de Fechamento Pendente com Resumo do Último Dia */}
-          {!fechamentoHojeFeito && dados.ultimoFechamento && (
-            <section className="animar-surgir rounded-2xl border border-atencao/30 bg-gradient-to-br from-atencao/[0.02] to-atencao/[0.05] p-6 shadow-sm border-l-4 border-l-atencao">
-              <div className="flex flex-wrap items-center justify-between gap-4 border-b border-borda pb-4">
-                <div>
-                  <h2 className="flex items-center gap-2 font-display text-lg font-bold text-claro">
-                    <span className="h-2 w-2 rounded-full bg-atencao animate-pulse" />
-                    Fechamento de hoje pendente
-                  </h2>
-                  <p className="text-xs text-suave mt-0.5">
-                    O caixa de hoje ainda não foi encerrado pelo operador. Exibindo resumo do último dia fechado.
-                  </p>
-                </div>
-                <div className="rounded-lg bg-ardosia border border-borda px-3 py-1.5 text-xs text-claro/80 leading-normal">
-                  Último dia fechado:{' '}
-                  <strong className="text-ambar">
-                    {new Date(dados.ultimoFechamento.data + 'T00:00:00').toLocaleDateString('pt-BR')}
-                  </strong>{' '}
-                  por <strong>{dados.ultimoFechamento.responsavelNome ?? 'Sistema'}</strong>
-                </div>
-              </div>
-
-              <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-5 mt-5">
-                <MiniResumo Item="Venda Física" Valor={formatReais(dados.ultimoFechamento.vendaFisica)} />
-                <MiniResumo Item="Despesas ($)" Valor={formatReais(dados.ultimoFechamento.despesa)} />
-                <MiniResumo Item="Fiado Concedido" Valor={formatReais(dados.ultimoFechamento.fiadoConcedido)} />
-                <MiniResumo
-                  Item="Diferença Caixa"
-                  Valor={formatReais(dados.ultimoFechamento.diferenca)}
-                  cor={
-                    dados.ultimoFechamento.diferenca < 0n
-                      ? 'text-negativo'
-                      : dados.ultimoFechamento.diferenca > 0n
-                        ? 'text-positivo'
-                        : 'text-claro'
-                  }
-                />
-                <MiniResumo
-                  Item="Valor a Depositar"
-                  Valor={formatReais(dados.ultimoFechamento.aDepositar)}
-                  destaque
-                />
-              </div>
-            </section>
-          )}
-
-          {/* Alertas */}
-          {exibeAlerta && (
-            <section className="animar-surgir relative overflow-hidden rounded-2xl border border-negativo/30 bg-gradient-to-r from-negativo/[0.03] to-negativo/[0.08] p-5 shadow-sm shadow-negativo/5">
-              <div className="absolute inset-y-0 left-0 w-1 bg-negativo/80" />
-              <h2 className="mb-3 flex items-center gap-2 font-display font-bold text-negativo">
-                <svg className="h-5 w-5 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-                </svg>
-                Controle de Estoque e Nível Crítico
-              </h2>
-              <div className="grid gap-3 sm:grid-cols-2">
-                {dados.alertas.tanquesBaixo.map((t) => (
-                  <div key={t.id} className="flex items-center gap-3 rounded-xl border border-negativo/15 bg-ardosia/40 p-3 text-sm">
-                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-negativo/10 font-bold text-negativo text-xs">!</span>
-                    <div className="min-w-0 flex-1">
-                      <p className="font-semibold text-claro truncate">Tanque {t.nome}</p>
-                      <p className="text-xs text-suave mt-0.5">Nível: <strong className="text-negativo font-bold">{t.litros}L</strong> (Alerta: {t.limite}L)</p>
-                    </div>
+        {dados && (
+          <>
+            {/* Caixa de Fechamento Pendente com Resumo do Último Dia */}
+            {!fechamentoHojeFeito && dados.ultimoFechamento && (
+              <section className="animar-surgir rounded-2xl border border-atencao/30 bg-gradient-to-br from-atencao/[0.02] to-atencao/[0.05] p-6 shadow-sm border-l-4 border-l-atencao">
+                <div className="flex flex-wrap items-center justify-between gap-4 border-b border-borda pb-4">
+                  <div>
+                    <h2 className="flex items-center gap-2 font-display text-lg font-bold text-claro">
+                      <span className="h-2 w-2 rounded-full bg-atencao animate-pulse" />
+                      Fechamento de hoje pendente
+                    </h2>
+                    <p className="text-xs text-suave mt-0.5">
+                      O caixa de hoje ainda não foi encerrado pelo operador. Exibindo resumo do último dia fechado.
+                    </p>
                   </div>
-                ))}
-                {dados.alertas.produtosBaixo.map((p) => (
-                  <div key={p.id} className="flex items-center gap-3 rounded-xl border border-negativo/15 bg-ardosia/40 p-3 text-sm">
-                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-negativo/10 font-bold text-negativo text-xs">!</span>
-                    <div className="min-w-0 flex-1">
-                      <p className="font-semibold text-claro truncate">{p.nome}</p>
-                      <p className="text-xs text-suave mt-0.5">Estoque: <strong className="text-negativo font-bold">{p.quantidade} un</strong> (Alerta: {p.limite})</p>
-                    </div>
+                  <div className="rounded-lg bg-ardosia border border-borda px-3 py-1.5 text-xs text-claro/80 leading-normal">
+                    Último dia fechado:{' '}
+                    <strong className="text-ambar">
+                      {new Date(dados.ultimoFechamento.data + 'T00:00:00').toLocaleDateString('pt-BR')}
+                    </strong>{' '}
+                    por <strong>{dados.ultimoFechamento.responsavelNome ?? 'Sistema'}</strong>
                   </div>
-                ))}
-              </div>
+                </div>
+
+                <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-5 mt-5">
+                  <MiniResumo Item="Venda Física" Valor={formatReais(dados.ultimoFechamento.vendaFisica)} />
+                  <MiniResumo Item="Despesas ($)" Valor={formatReais(dados.ultimoFechamento.despesa)} />
+                  <MiniResumo Item="Fiado Concedido" Valor={formatReais(dados.ultimoFechamento.fiadoConcedido)} />
+                  <MiniResumo
+                    Item="Diferença Caixa"
+                    Valor={formatReais(dados.ultimoFechamento.diferenca)}
+                    cor={
+                      dados.ultimoFechamento.diferenca < 0n
+                        ? 'text-negativo'
+                        : dados.ultimoFechamento.diferenca > 0n
+                          ? 'text-positivo'
+                          : 'text-claro'
+                    }
+                  />
+                  <MiniResumo
+                    Item="Valor a Depositar"
+                    Valor={formatReais(dados.ultimoFechamento.aDepositar)}
+                    destaque
+                  />
+                </div>
+              </section>
+            )}
+
+            {/* Alertas */}
+            {exibeAlerta && (
+              <section className="animar-surgir relative overflow-hidden rounded-2xl border border-negativo/30 bg-gradient-to-r from-negativo/[0.03] to-negativo/[0.08] p-5 shadow-sm shadow-negativo/5">
+                <div className="absolute inset-y-0 left-0 w-1 bg-negativo/80" />
+                <h2 className="mb-3 flex items-center gap-2 font-display font-bold text-negativo">
+                  <svg className="h-5 w-5 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+                  </svg>
+                  Controle de Estoque e Nível Crítico
+                </h2>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {dados.alertas.tanquesBaixo.map((t) => (
+                    <div key={t.id} className="flex items-center gap-3 rounded-xl border border-negativo/15 bg-ardosia/40 p-3 text-sm">
+                      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-negativo/10 font-bold text-negativo text-xs">!</span>
+                      <div className="min-w-0 flex-1">
+                        <p className="font-semibold text-claro truncate">Tanque {t.nome}</p>
+                        <p className="text-xs text-suave mt-0.5">Nível: <strong className="text-negativo font-bold">{t.litros}L</strong> (Alerta: {t.limite}L)</p>
+                      </div>
+                    </div>
+                  ))}
+                  {dados.alertas.produtosBaixo.map((p) => (
+                    <div key={p.id} className="flex items-center gap-3 rounded-xl border border-negativo/15 bg-ardosia/40 p-3 text-sm">
+                      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-negativo/10 font-bold text-negativo text-xs">!</span>
+                      <div className="min-w-0 flex-1">
+                        <p className="font-semibold text-claro truncate">{p.nome}</p>
+                        <p className="text-xs text-suave mt-0.5">Estoque: <strong className="text-negativo font-bold">{p.quantidade} un</strong> (Alerta: {p.limite})</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {/* KPIs (Venda Dia, Venda do Mês com Volume, Capital) */}
+            <section className="grid gap-4 sm:grid-cols-3">
+              <Kpi
+                rotulo="Venda do dia"
+                valor={formatReais(dados.vendas.vendaDia)}
+                icone={ICO.dia('h-5 w-5')}
+                subtitulo={`Média diária: R$ ${mediaDiaria.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                destaque
+              />
+              <Kpi
+                rotulo="Vendas do mês"
+                valor={formatReais(dados.vendas.vendaMes)}
+                icone={ICO.mes('h-5 w-5')}
+                subtitulo={`Volume: ${formatLitros(litrosParaMililitros(dados.vendas.litrosMes))} • Pico: R$ ${picoFaturamento.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+              />
+              <Kpi
+                rotulo={`Capital ${modoCapitalTotal ? 'total' : 'operacional'}`}
+                valor={formatReais(modoCapitalTotal ? dados.capital.total : dados.capital.operacional)}
+                icone={ICO.capital('h-5 w-5')}
+                subtitulo={modoCapitalTotal ? 'Inclui aportes de sócios' : 'Patrimônio gerado pela operação'}
+              />
             </section>
-          )}
 
-          {/* KPIs */}
-          <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <Kpi
-              rotulo="Venda do dia"
-              valor={formatReais(dados.vendas.vendaDia)}
-              icone={ICO.dia('h-5 w-5')}
-              subtitulo={`Média diária: R$ ${mediaDiaria.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-              destaque
-            />
-            <Kpi
-              rotulo="Venda do mês"
-              valor={formatReais(dados.vendas.vendaMes)}
-              icone={ICO.mes('h-5 w-5')}
-              subtitulo={`Maior pico: R$ ${picoFaturamento.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-            />
-            <Kpi
-              rotulo="Litros vendidos (mês)"
-              valor={formatLitros(litrosParaMililitros(dados.vendas.litrosMes))}
-              icone={ICO.litros('h-5 w-5')}
-              subtitulo="Acumulado mensal"
-            />
-            <Kpi
-              rotulo={`Capital ${modoCapitalTotal ? 'total' : 'operacional'}`}
-              valor={formatReais(modoCapitalTotal ? dados.capital.total : dados.capital.operacional)}
-              icone={ICO.capital('h-5 w-5')}
-              subtitulo={modoCapitalTotal ? 'Inclui aportes de sócios' : 'Gerado puramente pela operação'}
-            />
-          </section>
-
-          <div className="grid items-start gap-6 lg:grid-cols-3">
             {/* Gráfico de Vendas */}
-            <section className="cartao flex min-h-[340px] flex-col p-6 lg:col-span-2">
-              <div className="mb-6 flex flex-wrap items-baseline justify-between gap-4">
-                <div>
-                  <h2 className="font-display text-lg font-bold text-claro">Faturamento</h2>
-                  <p className="text-xs text-suave">Histórico de faturamento de fechamentos confirmados</p>
-                </div>
-                <div className="flex items-center gap-4 flex-wrap">
-                  <div className="text-right">
-                    <p className="text-[10px] font-bold uppercase tracking-wider text-suave">Total no Filtro</p>
-                    <p className="numeros font-bold text-sm text-claro mt-0.5">
-                      R$ {totalVendasFiltradas.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </p>
-                  </div>
-                  <div className="text-right border-l border-borda pl-4 mr-2">
-                    <p className="text-[10px] font-bold uppercase tracking-wider text-suave">Média/Período</p>
-                    <p className="numeros font-bold text-sm text-claro mt-0.5">
-                      R$ {mediaDiariaFiltrada.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </p>
+            <section className="cartao flex min-h-[300px] flex-col p-6">
+              <div className="mb-4 flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="font-display text-lg font-bold text-claro">Faturamento</h2>
+                    <p className="text-[10px] text-suave">Histórico de fechamentos confirmados</p>
                   </div>
                   <select
                     value={periodoFiltro}
                     onChange={(e) => setPeriodoFiltro(e.target.value as any)}
                     className="rounded-lg border border-borda bg-ardosia px-2.5 py-1.5 text-xs font-semibold text-claro focus:outline-none cursor-pointer"
                   >
-                    <option value="7d">Últimos 7 dias</option>
-                    <option value="30d">Últimos 30 dias</option>
-                    <option value="mes">Mês Vigente</option>
-                    <option value="90d">Últimos 90 dias (Semanal)</option>
+                    <option value="7d">7 dias</option>
+                    <option value="30d">30 dias</option>
+                    <option value="mes">Mês</option>
+                    <option value="90d">90 dias</option>
                   </select>
                 </div>
+                <div className="flex items-center justify-between border-t border-borda/30 pt-2.5 mt-1 text-xs">
+                  <div>
+                    <p className="text-[9px] font-bold uppercase tracking-wider text-suave">Total no Filtro</p>
+                    <p className="numeros font-bold text-sm text-claro mt-0.5">
+                      R$ {totalVendasFiltradas.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-[9px] font-bold uppercase tracking-wider text-suave">Média/Período</p>
+                    <p className="numeros font-bold text-sm text-claro mt-0.5">
+                      R$ {mediaDiariaFiltrada.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </p>
+                  </div>
+                </div>
               </div>
-              <div className="h-[240px] w-full flex-1">
+              <div className="h-[200px] w-full flex-1">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={vendasFiltradas} margin={{ top: 4, right: 4, left: -8, bottom: 0 }}>
                     <defs>
@@ -423,133 +450,113 @@ export function Painel() {
               </div>
             </section>
 
-            {/* Tanques */}
-            <section className="cartao flex flex-col p-6 h-full min-h-[340px]">
-              <div className="mb-5">
-                <h2 className="font-display text-lg font-bold text-claro">Tanques de Combustível</h2>
-                <p className="text-xs text-suave">Nível físico na última medição de régua</p>
-              </div>
-              <div className="flex flex-1 items-center justify-around gap-4 flex-wrap py-2">
-                {dados.tanques.map((t) => (
-                  <MedidorTanque
-                    key={t.id}
-                    nome={t.nome}
-                    combustivel={t.combustivel}
-                    nivel={t.nivel}
-                    capacidade={t.capacidade}
-                    nivelAlerta={t.nivelAlerta}
-                  />
-                ))}
-              </div>
-            </section>
-
-            {/* Gráfico de Evolução do Capital */}
-            <section className="cartao flex min-h-[340px] flex-col p-6 lg:col-span-2">
-              <div className="mb-6 flex flex-wrap items-baseline justify-between gap-2">
-                <div>
-                  <h2 className="font-display text-lg font-bold text-claro">Evolução do Capital</h2>
-                  <p className="text-xs text-suave">Acompanhamento histórico do patrimônio líquido</p>
+            {/* Gráficos de Capital e Despesas */}
+            <div className="grid gap-6 xl:grid-cols-3 items-start">
+              {/* Gráfico de Evolução do Capital */}
+              <section className="cartao flex min-h-[340px] flex-col p-6 xl:col-span-2">
+                <div className="mb-6 flex flex-wrap items-baseline justify-between gap-2">
+                  <div>
+                    <h2 className="font-display text-lg font-bold text-claro">Evolução do Capital</h2>
+                    <p className="text-xs text-suave">Acompanhamento histórico do patrimônio líquido</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-suave">
+                      Capital Atual ({modoCapitalTotal ? 'Total' : 'Operacional'})
+                    </p>
+                    <p className="numeros font-bold text-sm text-claro mt-0.5">
+                      {formatReais(modoCapitalTotal ? dados.capital.total : dados.capital.operacional)}
+                    </p>
+                  </div>
                 </div>
-                <div className="text-right">
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-suave">
-                    Capital Atual ({modoCapitalTotal ? 'Total' : 'Operacional'})
-                  </p>
-                  <p className="numeros font-bold text-sm text-claro mt-0.5">
-                    {formatReais(modoCapitalTotal ? dados.capital.total : dados.capital.operacional)}
-                  </p>
-                </div>
-              </div>
-              <div className="h-[240px] w-full flex-1">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={dados.capitalHistorico} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
-                    <defs>
-                      <linearGradient id="gradCapital" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor={cores.acento} stopOpacity={0.3} />
-                        <stop offset="100%" stopColor={cores.acento} stopOpacity={0.0} />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid stroke={cores.borda} strokeDasharray="3 3" vertical={false} opacity={0.3} />
-                    <XAxis
-                      dataKey="data"
-                      stroke={cores.borda}
-                      tick={{ fill: cores.suave, fontSize: 11 }}
-                      axisLine={false}
-                      tickLine={false}
-                    />
-                    <YAxis
-                      stroke={cores.borda}
-                      tick={{ fill: cores.suave, fontSize: 11 }}
-                      axisLine={false}
-                      tickLine={false}
-                      width={64}
-                      tickFormatter={(val) => `R$${val >= 1000 ? `${(val / 1000).toFixed(0)}k` : val}`}
-                    />
-                    <Tooltip content={<CustomTooltipCapital />} />
-                    <Area
-                      type="monotone"
-                      dataKey={modoCapitalTotal ? 'total' : 'operacional'}
-                      stroke={cores.acento}
-                      fill="url(#gradCapital)"
-                      strokeWidth={2.5}
-                    />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
-            </section>
-
-            {/* Painel de Contas */}
-            <PainelContas saldos={dados.saldosContas} />
-
-            {/* Gráfico de Despesas (Pizza) */}
-            <section className="cartao flex flex-col p-6 h-full min-h-[340px]">
-              <div className="mb-4">
-                <h2 className="font-display text-lg font-bold text-claro">Gastos por Categoria</h2>
-                <p className="text-xs text-suave">Distribuição de despesas e vales no mês</p>
-              </div>
-              {dados.despesasCategoria.length === 0 ? (
-                <div className="flex flex-1 flex-col items-center justify-center p-6 text-center text-sm text-suave leading-relaxed select-none">
-                  <svg className="h-10 w-10 opacity-30 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                  </svg>
-                  Nenhuma despesa registrada este mês.
-                </div>
-              ) : (
-                <div className="h-[240px] w-full flex-1 flex items-center justify-center">
+                <div className="h-[240px] w-full flex-1">
                   <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie
-                        data={dados.despesasCategoria}
-                        dataKey="valor"
-                        nameKey="categoriaNome"
-                        cx="50%"
-                        cy="45%"
-                        outerRadius={70}
-                        innerRadius={45}
-                        paddingAngle={3}
-                      >
-                        {dados.despesasCategoria.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={PALETA_CORES[index % PALETA_CORES.length]} />
-                        ))}
-                      </Pie>
-                      <Tooltip content={<CustomTooltipDespesas />} />
-                      <Legend
-                        verticalAlign="bottom"
-                        height={36}
-                        iconSize={8}
-                        iconType="circle"
-                        formatter={(value) => <span className="text-[11px] text-suave font-semibold">{value}</span>}
+                    <AreaChart data={dados.capitalHistorico} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id="gradCapital" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor={cores.acento} stopOpacity={0.3} />
+                          <stop offset="100%" stopColor={cores.acento} stopOpacity={0.0} />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid stroke={cores.borda} strokeDasharray="3 3" vertical={false} opacity={0.3} />
+                      <XAxis
+                        dataKey="data"
+                        stroke={cores.borda}
+                        tick={{ fill: cores.suave, fontSize: 11 }}
+                        axisLine={false}
+                        tickLine={false}
                       />
-                    </PieChart>
+                      <YAxis
+                        stroke={cores.borda}
+                        tick={{ fill: cores.suave, fontSize: 11 }}
+                        axisLine={false}
+                        tickLine={false}
+                        width={64}
+                        tickFormatter={(val) => `R$${val >= 1000 ? `${(val / 1000).toFixed(0)}k` : val}`}
+                      />
+                      <Tooltip content={<CustomTooltipCapital />} />
+                      <Area
+                        type="monotone"
+                        dataKey={modoCapitalTotal ? 'total' : 'operacional'}
+                        stroke={cores.acento}
+                        fill="url(#gradCapital)"
+                        strokeWidth={2.5}
+                      />
+                    </AreaChart>
                   </ResponsiveContainer>
                 </div>
-              )}
-            </section>
+              </section>
+
+              {/* Gráfico de Despesas (Pizza) */}
+              <section className="cartao flex flex-col p-6 h-full min-h-[340px] xl:col-span-1">
+                <div className="mb-4">
+                  <h2 className="font-display text-lg font-bold text-claro">Gastos por Categoria</h2>
+                  <p className="text-xs text-suave">Distribuição de despesas e vales no mês</p>
+                </div>
+                {dados.despesasCategoria.length === 0 ? (
+                  <div className="flex flex-1 flex-col items-center justify-center p-6 text-center text-sm text-suave leading-relaxed select-none">
+                    <svg className="h-10 w-10 opacity-30 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    Nenhuma despesa registrada este mês.
+                  </div>
+                ) : (
+                  <div className="h-[240px] w-full flex-1 flex items-center justify-center">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={dados.despesasCategoria}
+                          dataKey="valor"
+                          nameKey="categoriaNome"
+                          cx="50%"
+                          cy="45%"
+                          outerRadius={70}
+                          innerRadius={45}
+                          paddingAngle={3}
+                        >
+                          {dados.despesasCategoria.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={PALETA_CORES[index % PALETA_CORES.length]} />
+                          ))}
+                        </Pie>
+                        <Tooltip content={<CustomTooltipDespesas />} />
+                        <Legend
+                          verticalAlign="bottom"
+                          height={36}
+                          iconSize={8}
+                          iconType="circle"
+                          formatter={(value) => <span className="text-[11px] text-suave font-semibold">{value}</span>}
+                        />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+              </section>
+            </div>
 
             {/* Últimos Fechamentos */}
             <FechamentosRecentes fechamentos={dados.fechamentosRecentes} />
-          </div>
-        </>
-      )}
+          </>
+        )}
+      </div>
     </main>
   );
 }
@@ -668,7 +675,7 @@ function PainelContas({ saldos }: { saldos: SaldoConta[] }) {
 // Histórico de Fechamentos Recentes
 function FechamentosRecentes({ fechamentos }: { fechamentos: FechamentoResumo[] }) {
   return (
-    <section className="cartao flex flex-col p-6 h-full min-h-[340px] lg:col-span-2 select-none">
+    <section className="cartao flex flex-col p-6 h-full min-h-[340px] select-none">
       <div className="mb-4">
         <h2 className="font-display text-lg font-bold text-claro">Últimos Fechamentos</h2>
         <p className="text-xs text-suave">Resumo financeiro dos fechamentos mais recentes</p>
