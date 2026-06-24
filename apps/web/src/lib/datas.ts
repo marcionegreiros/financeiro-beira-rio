@@ -51,3 +51,33 @@ export function agoraManausISO(instante: Date = new Date()): string {
 export function competenciaDe(data: string = hojeManaus()): string {
   return data.slice(0, 7);
 }
+
+/**
+ * Limites de um dia de Manaus como timestamps ISO (com offset −04:00), no
+ * intervalo semiaberto [início, fim). Útil para filtrar `data_hora` (timestamptz)
+ * por "data do fechamento" (uma DATE).
+ */
+export function limitesDoDiaManaus(data: string): { inicio: string; fim: string } {
+  const inicio = `${data}T00:00:00-04:00`;
+  const proximo = new Date(inicio);
+  proximo.setUTCDate(proximo.getUTCDate() + 1);
+  return { inicio, fim: `${dataManaus(proximo)}T00:00:00-04:00` };
+}
+
+/**
+ * Timestamp ISO de Manaus numa DATA específica (YYYY-MM-DD) com a HORA atual.
+ * Para lançar um evento "no dia X" preservando uma ordem temporal razoável.
+ */
+export function agoraNaDataManaus(data: string = hojeManaus()): string {
+  const { hora, minuto, segundo } = partesManaus(new Date());
+  return `${data}T${pad2(hora)}:${pad2(minuto)}:${pad2(segundo)}-04:00`;
+}
+
+/** Formata data YYYY-MM-DD para DD/MM/YYYY. */
+export function formatarDataBR(dataIso: string | null | undefined): string {
+  if (!dataIso) return '';
+  const partes = dataIso.split('-');
+  if (partes.length !== 3) return dataIso;
+  const [ano, mes, dia] = partes;
+  return `${dia}/${mes}/${ano}`;
+}

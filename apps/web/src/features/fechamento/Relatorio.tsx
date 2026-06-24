@@ -1,5 +1,6 @@
 import { formatReais, type Centavos } from '../../lib/money';
 import { asMililitros, formatLitros } from '../../domain/tipos';
+import { formatarDataBR } from '../../lib/datas';
 
 export interface RelatorioDados {
   data: string;
@@ -15,23 +16,35 @@ export interface RelatorioDados {
   diferenca: Centavos;
   aDepositar: Centavos;
   observacao: string;
+  fiadoConcedido: Centavos;
+  fiadoRecebido: Centavos;
 }
 
-export function Relatorio({ dados, aoFechar }: { dados: RelatorioDados; aoFechar: () => void }) {
+export function Relatorio({
+  dados,
+  aoFechar,
+  podeReabrir,
+  aoReabrir,
+}: {
+  dados: RelatorioDados;
+  aoFechar: () => void;
+  podeReabrir?: boolean;
+  aoReabrir?: () => void;
+}) {
   return (
-    <div className="mx-auto flex max-w-2xl flex-col gap-6 px-4 py-6">
+    <div className="mx-auto flex max-w-2xl flex-col gap-6 px-4 py-6 print:p-0 print:text-black">
       <header className="flex items-center justify-between">
         <div>
           <p className="text-sm uppercase tracking-widest text-ambar">Relatório do caixa</p>
-          <h1 className="font-display text-2xl font-bold text-claro">{dados.data}</h1>
+          <h1 className="font-display text-2xl font-bold text-claro">{formatarDataBR(dados.data)}</h1>
         </div>
         <span className="rounded-full bg-positivo/20 px-3 py-1 text-sm text-positivo">
           Fechamento travado
         </span>
       </header>
 
-      <section className="rounded-2xl bg-ardosia p-5">
-        <h2 className="mb-3 font-display font-semibold text-claro">Itens vendidos</h2>
+      <section className="rounded-2xl bg-ardosia p-5 print:bg-transparent print:p-0">
+        <h2 className="mb-3 font-display font-semibold text-claro print:text-black">Itens vendidos</h2>
         <table className="w-full text-sm">
           <tbody>
             {dados.bombas.map((b, i) => (
@@ -62,11 +75,13 @@ export function Relatorio({ dados, aoFechar }: { dados: RelatorioDados; aoFechar
         </table>
       </section>
 
-      <section className="grid grid-cols-2 gap-3 rounded-2xl bg-ardosia p-5 text-sm sm:grid-cols-4">
+      <section className="grid grid-cols-2 gap-3 rounded-2xl bg-ardosia p-5 text-sm sm:grid-cols-4 print:bg-transparent print:p-0">
         <Item rotulo="PIX" valor={dados.pix} />
         <Item rotulo="Débito" valor={dados.debito} />
         <Item rotulo="Crédito" valor={dados.credito} />
         <Item rotulo="Despesa $" valor={dados.despesa} />
+        <Item rotulo="Fiado Conc." valor={dados.fiadoConcedido} />
+        <Item rotulo="Fiado Rec." valor={dados.fiadoRecebido} />
         <Item rotulo="Esperado" valor={dados.esperado} />
         <Item rotulo="Contado" valor={dados.contado} />
         <Item
@@ -89,16 +104,24 @@ export function Relatorio({ dados, aoFechar }: { dados: RelatorioDados; aoFechar
         </p>
       )}
 
-      <div className="flex gap-3">
+      <div className="flex flex-wrap gap-3 print:hidden">
         <button
           onClick={() => window.print()}
           className="rounded-lg border border-claro/20 px-4 py-2 text-claro/80 hover:border-claro/40"
         >
           Imprimir / PDF
         </button>
+        {podeReabrir && aoReabrir && (
+          <button
+            onClick={aoReabrir}
+            className="rounded-lg bg-negativo px-4 py-2 font-medium text-claro hover:bg-negativo/80"
+          >
+            Reabrir Fechamento
+          </button>
+        )}
         <button
           onClick={aoFechar}
-          className="rounded-lg bg-ambar px-4 py-2 font-medium text-petroleo"
+          className="ml-auto rounded-lg bg-ambar px-4 py-2 font-medium text-petroleo"
         >
           Concluir
         </button>

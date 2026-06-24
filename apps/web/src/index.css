@@ -1,26 +1,46 @@
 @import 'tailwindcss';
 
 /*
- * Tokens visuais — direção fixa da spec §8.2 (cockpit operacional, não landing page).
- * Tailwind v4: cada custom property gera utilitários (bg-*, text-*, font-*, etc.).
+ * ─────────────────────────────────────────────────────────────────────────
+ *  SISTEMA DE DESIGN — Pontão Beira Rio
+ *  Direção: cockpit operacional sério (referências: Stripe, Linear, Vercel).
+ *  Tailwind v4: cada `--color-*` em @theme gera utilitários (bg-*, text-*,
+ *  border-*). Os blocos :root / .dark / .dark2 reescrevem os valores por tema.
+ *  Nomes de token em português (domínio); mantidos por compatibilidade com as
+ *  telas já existentes. `ambar` é o TOKEN DE ACENTO (azul nos temas premium).
+ * ─────────────────────────────────────────────────────────────────────────
  */
 @theme {
-  /* Paleta base petróleo/ardósia (painel escuro) */
-  --color-petroleo: #0f1a24; /* fundo escuro do painel */
-  --color-ardosia: #1c2c3a; /* superfícies/cartões no escuro */
-  --color-claro: #e8edf2; /* texto claro */
+  /* Superfícies (valores default = tema claro; reescritos abaixo) */
+  --color-petroleo: #f5f7fa; /* fundo base da página */
+  --color-ardosia: #ffffff; /* superfície / cartão */
+  --color-elevado: #ffffff; /* superfície elevada (popover, destaque) */
+  --color-papel: #ffffff; /* campos de digitação longa */
 
-  /* Acento de ação/energia — usar com parcimônia (âmbar): "a depositar", CTAs */
-  --color-ambar: #f4a024;
+  /* Texto */
+  --color-claro: #0f172a; /* texto principal */
+  --color-suave: #64748b; /* texto secundário / legendas */
+  --color-tinta: #0f172a; /* texto sobre papel */
+
+  /* Acento e estados sobre acento */
+  --color-ambar: #2563eb; /* ACENTO (azul profissional) */
+  --color-sobreacento: #ffffff; /* texto legível sobre o acento */
 
   /* Semânticos */
-  --color-positivo: #2fa86a; /* sobra / sucesso */
-  --color-negativo: #d9544d; /* falta / alerta */
-  --color-atencao: #e6b800; /* atenção */
+  --color-positivo: #16a34a;
+  --color-negativo: #dc2626;
+  --color-atencao: #d97706;
 
-  /* Modo claro — telas de digitação longa (contagem) */
-  --color-papel: #f7f9fb; /* fundo claro */
-  --color-tinta: #16242f; /* texto escuro */
+  /* Bordas (token utilitário: border-borda) */
+  --color-borda: rgba(15, 23, 42, 0.09);
+
+  /* Sidebar — SEMPRE escura (alto contraste tipo "hub", inclusive no claro) */
+  --color-sidebar: #0b1120;
+  --color-sidebar-elevado: #131c2e;
+  --color-sidebar-borda: rgba(255, 255, 255, 0.08);
+  --color-sidebar-texto: #e2e8f0;
+  --color-sidebar-suave: #8a99b0;
+  --color-sidebar-acento: #3b82f6;
 
   /* Tipografia (§8.2) */
   --font-display: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif;
@@ -28,12 +48,110 @@
   --font-mono: 'IBM Plex Mono', ui-monospace, 'Cascadia Code', monospace;
 }
 
-/* Números financeiros: tabular-nums é CRÍTICO para colunas de valores alinharem. */
-.numeros {
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
+/*
+ * ── Tema CLARO (SaaS clean) ────────────────────────────────────────────────
+ * É o estado raiz. Sombras suaves azul-acinzentadas; superfícies brancas
+ * separadas do fundo por borda fina + sombra (não só por cor).
+ */
+:root {
+  --color-petroleo: #f5f7fa;
+  --color-ardosia: #ffffff;
+  --color-elevado: #ffffff;
+  --color-papel: #ffffff;
+  --color-claro: #0f172a;
+  --color-suave: #64748b;
+  --color-tinta: #0f172a;
+  --color-ambar: #2563eb;
+  --color-sobreacento: #ffffff;
+  --color-positivo: #16a34a;
+  --color-negativo: #dc2626;
+  --color-atencao: #d97706;
+  --color-borda: rgba(15, 23, 42, 0.09);
+
+  /* anel de foco (rgb do acento, usado em rgba()) */
+  --acento-rgb: 37, 99, 235;
+  --sombra-sm: 0 1px 2px rgba(15, 23, 42, 0.05), 0 1px 3px rgba(15, 23, 42, 0.05);
+  --sombra-md: 0 4px 14px -3px rgba(15, 23, 42, 0.1), 0 2px 6px -2px rgba(15, 23, 42, 0.06);
+  --sombra-lg: 0 18px 40px -12px rgba(15, 23, 42, 0.18), 0 6px 16px -8px rgba(15, 23, 42, 0.1);
+  --sombra-acento: 0 6px 16px -4px rgba(var(--acento-rgb), 0.35);
+  --brilho-acento: none;
+
+  color-scheme: light;
 }
 
+/*
+ * ── Tema ESCURO 1 (Petróleo clássico, acento âmbar quente) ─────────────────
+ */
+.dark {
+  --color-petroleo: #0b131a;
+  --color-ardosia: #15232f;
+  --color-elevado: #1c2f3d;
+  --color-papel: #15232f;
+  --color-claro: #eef3f8;
+  --color-suave: #8ea2b3;
+  --color-tinta: #eef3f8;
+  --color-ambar: #f4a024;
+  --color-sobreacento: #0b131a;
+  --color-positivo: #34d27b;
+  --color-negativo: #f06b63;
+  --color-atencao: #eab308;
+  --color-borda: rgba(238, 243, 248, 0.1);
+
+  --color-sidebar: #0a1118;
+  --color-sidebar-elevado: #111e29;
+  --color-sidebar-borda: rgba(255, 255, 255, 0.07);
+  --color-sidebar-texto: #e6edf4;
+  --color-sidebar-suave: #7e93a4;
+  --color-sidebar-acento: #f4a024;
+
+  --acento-rgb: 244, 160, 36;
+  --sombra-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --sombra-md: 0 8px 24px -6px rgba(0, 0, 0, 0.55), 0 2px 6px -2px rgba(0, 0, 0, 0.4);
+  --sombra-lg: 0 24px 50px -12px rgba(0, 0, 0, 0.7);
+  --sombra-acento: 0 6px 20px -6px rgba(var(--acento-rgb), 0.45);
+  --brilho-acento: 0 0 0 1px rgba(var(--acento-rgb), 0.18), 0 8px 24px -8px rgba(var(--acento-rgb), 0.4);
+
+  color-scheme: dark;
+}
+
+/*
+ * ── Tema ESCURO 2 (Premium deep dark, azul elétrico) ───────────────────────
+ * Padrão do app. Fundo quase preto, superfícies foscas elevadas, acento com
+ * brilho sutil.
+ */
+.dark2 {
+  --color-petroleo: #07080c;
+  --color-ardosia: #101219;
+  --color-elevado: #171a23;
+  --color-papel: #15171f;
+  --color-claro: #f2f5fb;
+  --color-suave: #8b93a7;
+  --color-tinta: #f2f5fb;
+  --color-ambar: #3b73ff;
+  --color-sobreacento: #ffffff;
+  --color-positivo: #10b981;
+  --color-negativo: #ef4444;
+  --color-atencao: #f59e0b;
+  --color-borda: rgba(255, 255, 255, 0.08);
+
+  --color-sidebar: #0a0b10;
+  --color-sidebar-elevado: #13151d;
+  --color-sidebar-borda: rgba(255, 255, 255, 0.06);
+  --color-sidebar-texto: #eef1f8;
+  --color-sidebar-suave: #8b93a7;
+  --color-sidebar-acento: #5a86ff;
+
+  --acento-rgb: 59, 115, 255;
+  --sombra-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --sombra-md: 0 8px 28px -8px rgba(0, 0, 0, 0.7), 0 2px 8px -2px rgba(0, 0, 0, 0.5);
+  --sombra-lg: 0 28px 60px -16px rgba(0, 0, 0, 0.85);
+  --sombra-acento: 0 8px 22px -6px rgba(var(--acento-rgb), 0.5);
+  --brilho-acento: 0 0 0 1px rgba(var(--acento-rgb), 0.22), 0 10px 30px -8px rgba(var(--acento-rgb), 0.45);
+
+  color-scheme: dark;
+}
+
+/* ── Base ─────────────────────────────────────────────────────────────────── */
 html,
 body,
 #root {
@@ -46,6 +164,160 @@ body {
   background-color: var(--color-petroleo);
   color: var(--color-claro);
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  transition:
+    background-color 0.25s ease,
+    color 0.25s ease;
+}
+
+/* Números financeiros: tabular-nums é CRÍTICO para colunas alinharem. */
+.numeros {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+/* ── Primitivas de superfície ──────────────────────────────────────────────
+ * .cartao        superfície padrão (borda fina + sombra suave)
+ * .cartao-realce superfície elevada com mais profundidade
+ * Aplicáveis junto de utilitários Tailwind (padding, etc.).
+ */
+.cartao {
+  background-color: var(--color-ardosia);
+  border: 1px solid var(--color-borda);
+  border-radius: 1rem;
+  box-shadow: var(--sombra-sm);
+}
+
+.cartao-realce {
+  background-color: var(--color-elevado);
+  border: 1px solid var(--color-borda);
+  border-radius: 1rem;
+  box-shadow: var(--sombra-md);
+}
+
+/* Linha hairline sutil reutilizável */
+.borda-sutil {
+  border-color: var(--color-borda);
+}
+
+/* ── Botões ────────────────────────────────────────────────────────────────
+ * .btn          base (alinhamento, transição, foco acessível)
+ * .btn-primario acento com gradiente sutil + brilho no escuro
+ * .btn-suave    superfície neutra para ações secundárias
+ */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: 0.625rem;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    transform 0.12s ease,
+    box-shadow 0.18s ease,
+    background-color 0.18s ease,
+    border-color 0.18s ease,
+    opacity 0.18s ease;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.btn:active {
+  transform: translateY(0.5px) scale(0.99);
+}
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(var(--acento-rgb), 0.4);
+}
+
+.btn-primario {
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-ambar) 86%, #ffffff 14%),
+    var(--color-ambar)
+  );
+  color: var(--color-sobreacento);
+  box-shadow: var(--sombra-acento);
+}
+.btn-primario:hover:not(:disabled) {
+  box-shadow: var(--brilho-acento, var(--sombra-acento));
+  filter: brightness(1.05);
+}
+
+.btn-suave {
+  background-color: color-mix(in srgb, var(--color-claro) 7%, transparent);
+  color: var(--color-claro);
+  border: 1px solid var(--color-borda);
+}
+.btn-suave:hover:not(:disabled) {
+  background-color: color-mix(in srgb, var(--color-claro) 12%, transparent);
+}
+
+/* ── Campos de formulário ──────────────────────────────────────────────────
+ * Foco profissional: borda assume o acento + anel translúcido suave.
+ */
+input,
+select,
+textarea {
+  border: 1px solid var(--color-borda);
+  background-color: var(--color-papel);
+  color: var(--color-claro);
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    background-color 0.15s ease;
+}
+input::placeholder,
+textarea::placeholder {
+  color: var(--color-suave);
+  opacity: 0.7;
+}
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--color-ambar);
+  box-shadow: 0 0 0 3px rgba(var(--acento-rgb), 0.18);
+}
+
+/* Trilho de rolagem discreto, alinhado ao tema */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-claro) 18%, transparent) transparent;
+}
+
+/* ── Animações ─────────────────────────────────────────────────────────────── */
+@keyframes surgir {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes deslizar-lateral {
+  from {
+    opacity: 0;
+    transform: translateX(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+.animar-surgir {
+  animation: surgir 0.28s ease both;
+}
+.animar-lateral {
+  animation: deslizar-lateral 0.2s ease both;
 }
 
 /* Acessibilidade: respeitar preferência de movimento reduzido (§8.5). */

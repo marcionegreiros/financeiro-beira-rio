@@ -16,19 +16,31 @@ const ML_POR_LITRO = 1000;
 /** number/string (centavos inteiros) → Centavos. */
 export function paraCentavos(valor: number | string | null | undefined): Centavos {
   if (valor === null || valor === undefined) return asCentavos(0n);
-  return asCentavos(BigInt(Math.round(Number(valor))));
+  const valorStr = String(valor).trim().replace(',', '.');
+  if (valorStr === '') return asCentavos(0n);
+  const num = Number(valorStr);
+  if (isNaN(num)) return asCentavos(0n);
+  return asCentavos(BigInt(Math.round(num)));
 }
 
 /** litros (numeric, possivelmente fracionário) → Mililitros (inteiro). */
 export function litrosParaMililitros(litros: number | string | null | undefined): Mililitros {
   if (litros === null || litros === undefined) return asMililitros(0n);
-  return asMililitros(BigInt(Math.round(Number(litros) * ML_POR_LITRO)));
+  const valorStr = String(litros).trim().replace(',', '.');
+  if (valorStr === '') return asMililitros(0n);
+  const num = Number(valorStr);
+  if (isNaN(num)) return asMililitros(0n);
+  return asMililitros(BigInt(Math.round(num * ML_POR_LITRO)));
 }
 
 /** quantidade (numeric) → Quantidade (inteiro na v1). */
 export function paraQuantidade(valor: number | string | null | undefined): Quantidade {
   if (valor === null || valor === undefined) return asQuantidade(0n);
-  return asQuantidade(BigInt(Math.round(Number(valor))));
+  const valorStr = String(valor).trim().replace(',', '.');
+  if (valorStr === '') return asQuantidade(0n);
+  const num = Number(valorStr);
+  if (isNaN(num)) return asQuantidade(0n);
+  return asQuantidade(BigInt(Math.round(num)));
 }
 
 // ---- Domínio → banco (saída/persistência) ------------------------------------

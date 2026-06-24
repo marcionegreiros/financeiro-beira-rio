@@ -52,3 +52,18 @@ export function dinheiroEsperado(e: EntradaCaixa): Centavos {
 export function diferencaCaixa(dinheiroContado: Centavos, esperado: Centavos): Centavos {
   return subtrair(dinheiroContado, esperado);
 }
+
+/** Uma despesa do dia, vinda do livro financeiro (magnitude positiva). */
+export interface DespesaDoDia {
+  valor: Centavos;
+  formaPagamento: string | null;
+}
+
+/**
+ * Soma SÓ as despesas pagas em dinheiro — as únicas que saem da gaveta e, por
+ * isso, reduzem o `dinheiro_esperado` (§3.3). Despesas em PIX/cartão afetam o
+ * banco, não a gaveta, então não entram aqui (mas constam no relatório do dia).
+ */
+export function totalDespesasDinheiro(despesas: readonly DespesaDoDia[]): Centavos {
+  return somar(...despesas.filter((d) => d.formaPagamento === 'dinheiro').map((d) => d.valor));
+}

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { parseReais, subtrair } from '../../lib/money';
-import { dinheiroEsperado, diferencaCaixa } from '../caixa';
+import { parseReais, subtrair, ZERO } from '../../lib/money';
+import { dinheiroEsperado, diferencaCaixa, totalDespesasDinheiro } from '../caixa';
 
 const venda = parseReais('1.000,00');
 
@@ -57,5 +57,36 @@ describe('troco fixo entra como entrada', () => {
   it('soma o troco fixo ao esperado', () => {
     const com = dinheiroEsperado({ vendaFisica: venda, trocoFixo: parseReais('100,00') });
     expect(com).toBe(parseReais('1.100,00'));
+  });
+});
+
+describe('despesas do dia: só as em dinheiro saem da gaveta (§3.3)', () => {
+  it('soma apenas as despesas pagas em dinheiro', () => {
+    const total = totalDespesasDinheiro([
+      { valor: parseReais('50,00'), formaPagamento: 'dinheiro' },
+      { valor: parseReais('30,00'), formaPagamento: 'dinheiro' },
+      { valor: parseReais('200,00'), formaPagamento: 'pix' },
+      { valor: parseReais('99,90'), formaPagamento: 'credito' },
+    ]);
+    expect(total).toBe(parseReais('80,00'));
+  });
+
+  it('lista vazia ou sem dinheiro soma zero', () => {
+    expect(totalDespesasDinheiro([])).toBe(ZERO);
+    expect(totalDespesasDinheiro([{ valor: parseReais('40,00'), formaPagamento: 'pix' }])).toBe(ZERO);
+  });
+
+  it('despesas em dinheiro reduzem o esperado pelo total somado', () => {
+    const despesas = [
+      { valor: parseReais('50,00'), formaPagamento: 'dinheiro' },
+      { valor: parseReais('30,00'), formaPagamento: 'pix' },
+    ];
+    const sem = dinheiroEsperado({ vendaFisica: venda });
+    const com = dinheiroEsperado({
+      vendaFisica: venda,
+      despesasDinheiro: totalDespesasDinheiro(despesas),
+    });
+    // só os 50,00 em dinheiro saem da gaveta; o PIX não.
+    expect(subtrair(sem, com)).toBe(parseReais('50,00'));
   });
 });
