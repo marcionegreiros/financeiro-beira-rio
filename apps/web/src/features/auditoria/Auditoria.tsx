@@ -6,6 +6,7 @@ import { useToast } from '../../components/ui/Toast';
 import { DataTable, type Coluna } from '../../components/ui/DataTable';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { CLASSE_CAMPO } from '../../components/ui/Campo';
+import { Avatar } from '../../components/ui/Avatar';
 
 const ACOES: Record<string, { label: string; cls: string }> = {
   criar: { label: 'Criar', cls: 'bg-positivo/15 text-positivo' },
@@ -131,7 +132,12 @@ export function Auditoria() {
     {
       chave: 'usuario',
       titulo: 'Usuário',
-      render: (l) => <span className="font-medium text-claro">{l.usuarioNome}</span>,
+      render: (l) => (
+        <div className="flex items-center gap-2">
+          <Avatar nome={l.usuarioNome ?? '?'} fotoUrl={l.usuarioFoto} size="xs" />
+          <span className="font-medium text-claro">{l.usuarioNome}</span>
+        </div>
+      ),
     },
     { chave: 'acao', titulo: 'Ação', render: (l) => <Acao acao={l.acao} /> },
     {

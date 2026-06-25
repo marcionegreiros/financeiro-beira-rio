@@ -65,6 +65,12 @@ pnpm preview        # serve o build (para testar instalação/offline)
   ref `jkvyrrzjgphhvejggiuo`, sa-east-1; segurança zerada). App **conectado online**:
   `data/` (cliente, repositórios, conversão), **login** e **Painel** lendo dados
   reais. Falta só a instância **PowerSync** para o offline (SQLite local).
+- ✅ **Fase 3** — **Autenticação e permissões**: tela de **Usuários** (cadastro
+  via Edge Function `admin-usuarios`, cargo+checklist, **ACL fina por conta**,
+  **foto** por usuário), "Meu perfil" (autoatendimento), Painel por permissão,
+  nova permissão `editar_lancamentos_retroativos`, RLS aplicado de fato e
+  **auditoria** com avatar de quem fez. Falta: sync rules do PowerSync espelharem
+  o mesmo subconjunto (Fase 9).
 - 🟢 **Fase 5** — **Fechamento de caixa** ⭐ + **Relatório** ligados ao banco:
   entrada teclado-first, cálculo ao vivo (motor da Fase 2), pagamentos/taxas,
   "a depositar", diferença, confirma/trava gravando eventos. Escrita verificada

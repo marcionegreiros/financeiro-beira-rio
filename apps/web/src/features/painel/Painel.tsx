@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo } from 'react';
+import type { UsuarioAtual } from '../../data/usuario';
 import { formatReais, asCentavos, type Centavos } from '../../lib/money';
 import { formatLitros } from '../../domain/tipos';
 import { litrosParaMililitros } from '../../data/conversao';
@@ -119,7 +120,10 @@ function agruparPorSemana(dados: { data: string; valor: number }[]) {
   return result;
 }
 
-export function Painel() {
+export function Painel({ usuario }: { usuario: UsuarioAtual }) {
+  // Painel respeita as permissões: quem não vê capital não vê os cartões de
+  // capital/saldos (§4, §5.1) — fica só com o painel operacional.
+  const podeVerCapital = usuario.permissoes.has('ver_capital');
   const [dados, setDados] = useState<Dados | null>(null);
   const [erro, setErro] = useState<string | null>(null);
   const [modoCapitalTotal, setModoCapitalTotal] = useState(false);
@@ -247,7 +251,7 @@ export function Painel() {
             Dados operacionais apurados até {new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Manaus', day: '2-digit', month: 'long', year: 'numeric' })}
           </p>
         </div>
-        {dados && (
+        {dados && podeVerCapital && (
           <div className="flex p-0.5 rounded-xl border border-borda bg-ardosia/50 backdrop-blur-sm shadow-[var(--sombra-sm)] select-none">
             <button
               type="button"
@@ -750,6 +754,7 @@ export function Painel() {
               </section>
 
               {/* Gráfico de Evolução do Capital */}
+              {podeVerCapital && (
               <section className="cartao flex min-h-[340px] flex-col p-6">
                 <div className="mb-6 flex flex-wrap items-baseline justify-between gap-2">
                   <div>
@@ -802,6 +807,7 @@ export function Painel() {
                   </ResponsiveContainer>
                 </div>
               </section>
+              )}
 
               {/* Últimos Fechamentos */}
               <FechamentosRecentes fechamentos={dados.fechamentosRecentes} />
@@ -833,8 +839,8 @@ export function Painel() {
                 </div>
               </section>
 
-              {/* Painel de Contas */}
-              <PainelContas saldos={dados.saldosContas} />
+              {/* Painel de Contas (saldos = visão de capital) */}
+              {podeVerCapital && <PainelContas saldos={dados.saldosContas} />}
 
               {/* Gráfico de Despesas (Pizza) */}
               <section className="cartao flex flex-col p-6 min-h-[340px]">

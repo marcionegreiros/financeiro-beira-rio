@@ -44,6 +44,9 @@ export function Produtos({ usuario }: ProdutosProps) {
   const [dataSelecionada, setDataSelecionada] = useState(hojeManaus());
 
   const podeDefinirPrecoCusto = usuario?.permissoes.has('definir_preco_custo') ?? true;
+  // Cadastrar/editar produto e dar entrada de estoque exigem `cadastrar_produto`.
+  // O vendedor (só `definir_preco_custo`) vê apenas as ações de Preço/Custo.
+  const podeCadastrar = usuario?.permissoes.has('cadastrar_produto') ?? true;
 
   // Selecionado para modais
   const [selecionado, setSelecionado] = useState<ProdutoNaData | null>(null);
@@ -477,38 +480,46 @@ export function Produtos({ usuario }: ProdutosProps) {
       alinhar: 'right',
       render: (p) => (
         <div className="flex gap-1 justify-end flex-wrap max-w-xs">
-          <button
-            type="button"
-            onClick={() => abrirEditar(p)}
-            className="rounded px-2 py-1 text-[11px] font-semibold text-suave bg-claro/5 transition-all hover:bg-ambar hover:text-sobreacento"
-            title="Editar dados gerais"
-          >
-            Editar
-          </button>
-          <button
-            type="button"
-            onClick={() => abrirEstoque(p)}
-            className="rounded px-2 py-1 text-[11px] font-semibold text-positivo bg-positivo/5 transition-all hover:bg-positivo hover:text-sobreacento"
-            title="Entrada de estoque de produtos"
-          >
-            + Estoque
-          </button>
-          <button
-            type="button"
-            onClick={() => abrirPreco(p)}
-            className="rounded px-2 py-1 text-[11px] font-semibold text-cyan-400 bg-cyan-400/5 transition-all hover:bg-cyan-400 hover:text-black"
-            title="Preço de venda"
-          >
-            Preço
-          </button>
-          <button
-            type="button"
-            onClick={() => abrirCusto(p)}
-            className="rounded px-2 py-1 text-[11px] font-semibold text-ambar bg-ambar/5 transition-all hover:bg-ambar hover:text-sobreacento"
-            title="Custo unitário"
-          >
-            Custo
-          </button>
+          {podeCadastrar && (
+            <>
+              <button
+                type="button"
+                onClick={() => abrirEditar(p)}
+                className="rounded px-2 py-1 text-[11px] font-semibold text-suave bg-claro/5 transition-all hover:bg-ambar hover:text-sobreacento"
+                title="Editar dados gerais"
+              >
+                Editar
+              </button>
+              <button
+                type="button"
+                onClick={() => abrirEstoque(p)}
+                className="rounded px-2 py-1 text-[11px] font-semibold text-positivo bg-positivo/5 transition-all hover:bg-positivo hover:text-sobreacento"
+                title="Entrada de estoque de produtos"
+              >
+                + Estoque
+              </button>
+            </>
+          )}
+          {podeDefinirPrecoCusto && (
+            <>
+              <button
+                type="button"
+                onClick={() => abrirPreco(p)}
+                className="rounded px-2 py-1 text-[11px] font-semibold text-cyan-400 bg-cyan-400/5 transition-all hover:bg-cyan-400 hover:text-black"
+                title="Preço de venda"
+              >
+                Preço
+              </button>
+              <button
+                type="button"
+                onClick={() => abrirCusto(p)}
+                className="rounded px-2 py-1 text-[11px] font-semibold text-ambar bg-ambar/5 transition-all hover:bg-ambar hover:text-sobreacento"
+                title="Custo unitário"
+              >
+                Custo
+              </button>
+            </>
+          )}
         </div>
       ),
     },
@@ -520,9 +531,11 @@ export function Produtos({ usuario }: ProdutosProps) {
         titulo="Produtos"
         subtitulo="Catálogo de mercadorias e configurações de estoque"
         acao={
-          <button type="button" onClick={abrirNovo} className="btn btn-primario px-4 py-2 text-sm">
-            <IconePlus /> Novo produto
-          </button>
+          podeCadastrar ? (
+            <button type="button" onClick={abrirNovo} className="btn btn-primario px-4 py-2 text-sm">
+              <IconePlus /> Novo produto
+            </button>
+          ) : undefined
         }
       />
 

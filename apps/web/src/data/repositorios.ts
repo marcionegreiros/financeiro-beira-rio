@@ -595,6 +595,13 @@ export async function lancarTransferencia(
     }
   ]);
   if (error) throw error;
+  await registrarAuditoria({
+    entidade: ehDeposito ? 'deposito' : 'transferencia',
+    entidadeId: idOrigem,
+    acao: 'criar',
+    usuarioId: criadoPor,
+    depois: { valor_centavos: valor, conta_origem: contaOrigemId, conta_destino: contaDestinoId, descricao },
+  });
 }
 
 export async function lancarDespesa(
@@ -621,6 +628,13 @@ export async function lancarDespesa(
     criado_por: criadoPor
   });
   if (error) throw error;
+  await registrarAuditoria({
+    entidade: 'despesa',
+    entidadeId: id,
+    acao: 'criar',
+    usuarioId: criadoPor,
+    depois: { valor_centavos: -centavosParaNumero(valorCentavos), descricao, forma_pagamento: formaPagamento },
+  });
 }
 
 /** Uma despesa do dia (movimento tipo='despesa'), com magnitude positiva. */
@@ -781,6 +795,13 @@ export async function lancarOperacaoSocio(
     criado_por: criadoPor
   });
   if (error) throw error;
+  await registrarAuditoria({
+    entidade: 'socio',
+    entidadeId: id,
+    acao: 'criar',
+    usuarioId: criadoPor,
+    depois: { tipo, socio_id: socioId, valor_centavos: valor, descricao },
+  });
 }
 
 export interface CategoriaDespesa {
@@ -1106,6 +1127,7 @@ export interface AuditoriaLog {
   entidadeId: string;
   acao: string;
   usuarioNome: string | null;
+  usuarioFoto: string | null;
   dadosAntes: unknown;
   dadosDepois: unknown;
   criadoEm: string;
@@ -1114,10 +1136,12 @@ export interface AuditoriaLog {
 export async function listarAuditoria(): Promise<AuditoriaLog[]> {
   const { data, error } = await supabase
     .from('auditoria')
-    .select('id, entidade, entidade_id, acao, dados_antes, dados_depois, criado_em, usuario(nome)')
+    .select(
+      'id, entidade, entidade_id, acao, dados_antes, dados_depois, criado_em, usuario(nome,foto_url)',
+    )
     .order('criado_em', { ascending: false });
   if (error) throw error;
-  
+
   const linhas = (data ?? []) as Array<{
     id: string;
     entidade: string;
@@ -1126,7 +1150,10 @@ export async function listarAuditoria(): Promise<AuditoriaLog[]> {
     dados_antes: unknown;
     dados_depois: unknown;
     criado_em: string;
-    usuario: { nome: string } | { nome: string }[] | null;
+    usuario:
+      | { nome: string; foto_url: string | null }
+      | { nome: string; foto_url: string | null }[]
+      | null;
   }>;
 
   return linhas.map((l) => {
@@ -1137,11 +1164,37 @@ export async function listarAuditoria(): Promise<AuditoriaLog[]> {
       entidadeId: l.entidade_id,
       acao: l.acao,
       usuarioNome: usr?.nome ?? 'Sistema / Desconhecido',
+      usuarioFoto: usr?.foto_url ?? null,
       dadosAntes: l.dados_antes,
       dadosDepois: l.dados_depois,
       criadoEm: l.criado_em,
     };
   });
+}
+
+/**
+ * Grava um registro de auditoria (§5.12). Espelha o insert de `data/fechamento.ts`.
+ * Falha de auditoria não derruba a operação principal — loga e segue (rastro
+ * secundário, não a transação).
+ */
+export async function registrarAuditoria(params: {
+  entidade: string;
+  entidadeId: string;
+  acao: 'criar' | 'editar' | 'remover' | 'reabrir' | 'ajustar';
+  usuarioId: string;
+  antes?: unknown;
+  depois?: unknown;
+}): Promise<void> {
+  const { error } = await supabase.from('auditoria').insert({
+    id: uuidv7(),
+    entidade: params.entidade,
+    entidade_id: params.entidadeId,
+    acao: params.acao,
+    usuario_id: params.usuarioId,
+    dados_antes: params.antes ?? null,
+    dados_depois: params.depois ?? null,
+  });
+  if (error) console.error('Falha ao registrar auditoria:', error);
 }
 
 export interface FechamentoRecente {

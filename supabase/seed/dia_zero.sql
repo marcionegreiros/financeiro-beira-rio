@@ -20,12 +20,14 @@ insert into modelo_permissao (id, nome) values
 on conflict (id) do nothing;
 
 insert into modelo_permissao_item (modelo_id, permissao_chave) values
-  -- Vendedor: opera o dia, sem capital/sócios/permissões.
+  -- Vendedor: opera o dia (fecha caixa, lança despesa, ajusta preço/custo),
+  -- sem capital/sócios/permissões. Acesso a conta vem da ACL (caixa principal).
   ('00000000-0000-7000-8000-000000000002', 'fechar_caixa'),
   ('00000000-0000-7000-8000-000000000002', 'registrar_venda_avulsa'),
   ('00000000-0000-7000-8000-000000000002', 'ver_painel_operacional'),
   ('00000000-0000-7000-8000-000000000002', 'lancar_despesa'),
   ('00000000-0000-7000-8000-000000000002', 'gerenciar_fiado'),
+  ('00000000-0000-7000-8000-000000000002', 'definir_preco_custo'),
   -- Gerente (leitura): todos os ver_*.
   ('00000000-0000-7000-8000-000000000003', 'ver_painel_operacional'),
   ('00000000-0000-7000-8000-000000000003', 'ver_capital'),
@@ -49,7 +51,8 @@ insert into modelo_permissao_item (modelo_id, permissao_chave) values
   ('00000000-0000-7000-8000-000000000004', 'reabrir_fechamento'),
   ('00000000-0000-7000-8000-000000000004', 'gerenciar_permissoes'),
   ('00000000-0000-7000-8000-000000000004', 'ver_auditoria'),
-  ('00000000-0000-7000-8000-000000000004', 'editar_configuracoes')
+  ('00000000-0000-7000-8000-000000000004', 'editar_configuracoes'),
+  ('00000000-0000-7000-8000-000000000004', 'editar_lancamentos_retroativos')
 on conflict do nothing;
 
 -- ===================== Usuário (dono/gerente) =====================
@@ -57,10 +60,13 @@ insert into usuario (id, nome, email) values
   ('00000000-0000-7000-8000-000000000001', 'Márcio', 'mngn.eng@gmail.com')
 on conflict (id) do nothing;
 
+-- O 1º usuário (dono/gerente) começa com a permissão MÁXIMA: TODAS as chaves do
+-- catálogo. Assim, ao instalar o app numa nova empresa, o gerente já controla
+-- tudo e distribui o resto. (Robusto a novas permissões: usa o catálogo, não um
+-- modelo fixo.)
 insert into usuario_permissao (usuario_id, permissao_chave)
-select '00000000-0000-7000-8000-000000000001', permissao_chave
-from modelo_permissao_item
-where modelo_id = '00000000-0000-7000-8000-000000000004'
+select '00000000-0000-7000-8000-000000000001', chave
+from permissao
 on conflict do nothing;
 
 -- ===================== Categorias (ordem da contagem) =====================

@@ -267,9 +267,23 @@ Modo de abertura do sistema. Num dia D, cadastrar: saldo de cada conta, contagem
 | `definir_preco_custo` | Alterar preços e custos (com data/hora). |
 | `gerenciar_combustivel` | Entradas e medições de tanque, config de tanque. |
 | `reabrir_fechamento` | Reabrir/ajustar fechamento travado. |
+| `editar_lancamentos_retroativos` | Editar/excluir despesas, entradas e lançamentos de **dias anteriores**. |
 | `gerenciar_permissoes` | Criar usuários e atribuir permissões. |
 | `ver_auditoria` | Ver log de auditoria. |
 | `editar_configuracoes` | Troco, taxas de cartão, alertas, modo de apuração, etc. |
+
+> **Acesso por conta (ACL fina, §6.1 `usuario_conta`):** além das permissões globais
+> acima, cada usuário pode receber acesso **por conta** — `ver` ou `movimentar`.
+> Sem linha em `usuario_conta`, valem as permissões globais (`transferir_entre_contas`,
+> `gerenciar_contas`) como atalho. Com linha, restringe/concede conta a conta.
+> Enforce: helpers `private.pode_ver_conta` / `private.pode_movimentar_conta` no RLS.
+
+> **Foto e cargo (§6.1):** cada `usuario` tem `foto_url` (bucket `avatares`) e um
+> `cargo` nomeado (Dono/Gerente/Vendedor…). O cargo aplica um **modelo** de
+> permissões como ponto de partida; o que vale continua sendo o conjunto por
+> pessoa. O gerente (`gerenciar_permissoes`) troca foto de todos; cada pessoa
+> troca a própria. A criação de **login** (auth.users) passa pela Edge Function
+> `admin-usuarios` (service_role no servidor — nunca no cliente).
 
 **Modelos prontos sugeridos:**
 - **Vendedor:** `fechar_caixa`, `registrar_venda_avulsa`, `ver_painel_operacional`, `lancar_despesa` (só conta dinheiro do dia), `gerenciar_fiado`. **Sem** capital, transferências, sócios, permissões.
@@ -349,13 +363,18 @@ Modelagem **orientada a eventos** (Pilar 1). Saldos, estoques e vendas são **vi
 
 ### 6.1 Identidade e permissões
 ```
-usuario        (id, nome, email, auth_uid, ativo, criado_em)
+usuario        (id, nome, email, auth_uid, ativo, criado_em,
+                foto_url, cargo)                         -- foto (bucket avatares) e cargo (rótulo)
 permissao      (chave, descricao)                        -- catálogo fixo (enum)
 usuario_permissao (usuario_id → usuario, permissao_chave → permissao)
                   -- a concessão por item; PK composta
-modelo_permissao (id, nome)                              -- atalhos
+modelo_permissao (id, nome)                              -- atalhos (modelos prontos)
 modelo_permissao_item (modelo_id, permissao_chave)
+usuario_conta  (usuario_id → usuario, conta_id → conta,
+                nivel ∈ {ver, movimentar})               -- ACL fina por conta; PK composta
 ```
+> Criação de login via Edge Function `admin-usuarios` (service_role). Foto no
+> Storage bucket `avatares` (`{usuario_id}/avatar.<ext>`, leitura pública).
 
 ### 6.2 Catálogo e configuração
 ```

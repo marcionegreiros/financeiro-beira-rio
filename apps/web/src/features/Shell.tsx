@@ -13,8 +13,11 @@ import { Fiado } from './financeiro/Fiado';
 import { Folha } from './financeiro/Folha';
 import { useOnlineStatus } from '../hooks/useOnlineStatus';
 import { Auditoria } from './auditoria/Auditoria';
+import { Usuarios } from './usuarios/Usuarios';
+import { MeuPerfil } from './usuarios/MeuPerfil';
+import { Avatar } from '../components/ui/Avatar';
 
-type Tela = 'painel' | 'fechamento' | 'produtos' | 'configuracoes' | 'transferencias' | 'despesas' | 'socios' | 'fiado' | 'folha' | 'auditoria';
+type Tela = 'painel' | 'fechamento' | 'produtos' | 'configuracoes' | 'transferencias' | 'despesas' | 'socios' | 'fiado' | 'folha' | 'auditoria' | 'usuarios';
 export type Tema = 'light' | 'dark' | 'dark2' | 'system';
 
 // Ícones vetoriais (traço fino, grade 24) para navegação — sem emojis.
@@ -70,6 +73,11 @@ const ICONES: Record<Tela | 'sair', (className: string) => ReactNode> = {
       <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
     </svg>
   ),
+  usuarios: (className) => (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+    </svg>
+  ),
   sair: (className) => (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
@@ -94,6 +102,12 @@ export function Shell({ usuario }: { usuario: UsuarioAtual }) {
   const isOnline = useOnlineStatus();
   const [tela, setTela] = useState<Tela>('painel');
   const [menuAbertoMobile, setMenuAbertoMobile] = useState(false);
+  const [perfilAberto, setPerfilAberto] = useState(false);
+
+  // Foto/nome exibidos: começam do usuário carregado e atualizam ao editar o
+  // próprio perfil (sem precisar recarregar a sessão inteira).
+  const [nomeExibido, setNomeExibido] = useState(usuario.nome);
+  const [fotoExibida, setFotoExibida] = useState<string | null>(usuario.fotoUrl);
 
   // Tema inicial do localStorage ou padrão dark2
   const [theme, setThemeState] = useState<Tema>(() => {
@@ -147,6 +161,9 @@ export function Shell({ usuario }: { usuario: UsuarioAtual }) {
   const podeVerPainel =
     usuario.permissoes.has('ver_painel_operacional') || usuario.permissoes.has('ver_capital');
   const podeCadastrarProduto = usuario.permissoes.has('cadastrar_produto');
+  // A tela de Produtos abre para quem cadastra produto OU só ajusta preço/custo
+  // (vendedor) — a própria tela esconde as ações que cada um não pode (§5.6).
+  const podeVerProdutos = podeCadastrarProduto || usuario.permissoes.has('definir_preco_custo');
   const podeGerenciarContas = usuario.permissoes.has('gerenciar_contas');
   const podeEditarConfig = usuario.permissoes.has('editar_configuracoes');
 
@@ -156,6 +173,7 @@ export function Shell({ usuario }: { usuario: UsuarioAtual }) {
   const podeGerenciarFiado = usuario.permissoes.has('gerenciar_fiado');
   const podeGerenciarFuncionarios = usuario.permissoes.has('gerenciar_funcionarios');
   const podeVerAuditoria = usuario.permissoes.has('ver_auditoria');
+  const podeGerenciarUsuarios = usuario.permissoes.has('gerenciar_permissoes');
 
   const itensNav = [
     podeVerPainel && { id: 'painel' as Tela, label: 'Painel' },
@@ -168,14 +186,15 @@ export function Shell({ usuario }: { usuario: UsuarioAtual }) {
     podeGerenciarSocios && { id: 'socios' as Tela, label: 'Sócios' },
     podeGerenciarFiado && { id: 'fiado' as Tela, label: 'Fiado' },
     podeGerenciarFuncionarios && { id: 'folha' as Tela, label: 'Folha' },
-    podeCadastrarProduto && { id: 'produtos' as Tela, label: 'Produtos' },
+    podeVerProdutos && { id: 'produtos' as Tela, label: 'Produtos' },
     podeEditarConfig && { id: 'configuracoes' as Tela, label: 'Configurações' },
+    podeGerenciarUsuarios && { id: 'usuarios' as Tela, label: 'Usuários' },
     podeVerAuditoria && { id: 'auditoria' as Tela, label: 'Auditoria' },
   ].filter((item): item is { id: Tela; label: string } => !!item);
 
-  // Dedução de cargo baseado nas permissões
+  // Cargo exibido: o cadastrado pelo gerente; senão deduzido das permissões.
   const isGerente = usuario.permissoes.has('ver_capital');
-  const cargo = isGerente ? 'Gerente' : 'Operador';
+  const cargo = usuario.cargo ?? (isGerente ? 'Gerente' : 'Operador');
 
   const selecionar = (id: Tela) => {
     setTela(id);
@@ -214,7 +233,13 @@ export function Shell({ usuario }: { usuario: UsuarioAtual }) {
 
         {/* Rodapé */}
         <div className="space-y-3 border-t border-sidebar-borda p-3">
-          <BadgeUsuario nome={usuario.nome} cargo={cargo} isOnline={isOnline} />
+          <BadgeUsuario
+            nome={nomeExibido}
+            foto={fotoExibida}
+            cargo={cargo}
+            isOnline={isOnline}
+            aoClicar={() => setPerfilAberto(true)}
+          />
           <button
             type="button"
             onClick={() => void sair()}
@@ -260,8 +285,18 @@ export function Shell({ usuario }: { usuario: UsuarioAtual }) {
           <div className="animar-lateral absolute inset-y-0 left-0 flex w-[82%] max-w-xs flex-col border-r border-sidebar-borda bg-sidebar text-sidebar-texto shadow-2xl">
             <div className="flex-1 overflow-y-auto px-3 py-6">{navLista}</div>
             <div className="space-y-3 border-t border-sidebar-borda p-3">
-              <BadgeUsuario nome={usuario.nome} cargo={cargo} isOnline={isOnline} />
+              <BadgeUsuario
+                nome={nomeExibido}
+                foto={fotoExibida}
+                cargo={cargo}
+                isOnline={isOnline}
+                aoClicar={() => {
+                  setMenuAbertoMobile(false);
+                  setPerfilAberto(true);
+                }}
+              />
               <button
+                type="button"
                 onClick={() => void sair()}
                 className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium text-sidebar-suave transition-colors hover:bg-negativo/15 hover:text-negativo"
               >
@@ -276,7 +311,7 @@ export function Shell({ usuario }: { usuario: UsuarioAtual }) {
       {/* ───────── Conteúdo principal ───────── */}
       <main className="flex-1 overflow-y-auto p-4 md:p-8 lg:p-10">
         <div key={tela} className="animar-surgir mx-auto w-full max-w-6xl">
-          {tela === 'painel' && podeVerPainel && <Painel />}
+          {tela === 'painel' && podeVerPainel && <Painel usuario={usuario} />}
           {tela === 'fechamento' && podeFechar && (
             <Fechamento
               usuarioId={usuario.id}
@@ -294,13 +329,24 @@ export function Shell({ usuario }: { usuario: UsuarioAtual }) {
           {tela === 'socios' && podeGerenciarSocios && <Socios usuarioId={usuario.id} />}
           {tela === 'fiado' && podeGerenciarFiado && <Fiado usuarioId={usuario.id} />}
           {tela === 'folha' && podeGerenciarFuncionarios && <Folha usuarioId={usuario.id} />}
-          {tela === 'produtos' && podeCadastrarProduto && <Produtos usuario={usuario} />}
+          {tela === 'produtos' && podeVerProdutos && <Produtos usuario={usuario} />}
           {tela === 'configuracoes' && podeEditarConfig && (
             <Configuracoes tema={theme} aoTrocarTema={alterarTema} />
           )}
+          {tela === 'usuarios' && podeGerenciarUsuarios && <Usuarios usuario={usuario} />}
           {tela === 'auditoria' && podeVerAuditoria && <Auditoria />}
         </div>
       </main>
+
+      <MeuPerfil
+        usuario={usuario}
+        aberto={perfilAberto}
+        aoFechar={() => setPerfilAberto(false)}
+        aoAtualizar={({ nome, fotoUrl }) => {
+          setNomeExibido(nome);
+          setFotoExibida(fotoUrl);
+        }}
+      />
     </div>
   );
 }
@@ -313,11 +359,28 @@ function Logo() {
   );
 }
 
-function BadgeUsuario({ nome, cargo, isOnline }: { nome: string; cargo: string; isOnline: boolean }) {
+function BadgeUsuario({
+  nome,
+  foto,
+  cargo,
+  isOnline,
+  aoClicar,
+}: {
+  nome: string;
+  foto: string | null;
+  cargo: string;
+  isOnline: boolean;
+  aoClicar: () => void;
+}) {
   return (
-    <div className="flex items-center gap-3 rounded-xl border border-sidebar-borda bg-sidebar-elevado px-2.5 py-2">
-      <div className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/5 font-semibold text-sidebar-acento ring-1 ring-white/10">
-        {nome.charAt(0).toUpperCase()}
+    <button
+      type="button"
+      onClick={aoClicar}
+      title="Meu perfil"
+      className="flex w-full items-center gap-3 rounded-xl border border-sidebar-borda bg-sidebar-elevado px-2.5 py-2 text-left transition-colors hover:bg-white/[0.06]"
+    >
+      <div className="relative shrink-0">
+        <Avatar nome={nome} fotoUrl={foto} size="md" />
         <span
           className={`absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-sidebar-elevado ${isOnline ? 'bg-positivo' : 'bg-atencao'}`}
         />
@@ -328,7 +391,7 @@ function BadgeUsuario({ nome, cargo, isOnline }: { nome: string; cargo: string; 
           {cargo}
         </span>
       </div>
-    </div>
+    </button>
   );
 }
 
