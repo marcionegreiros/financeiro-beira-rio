@@ -53,6 +53,24 @@ function centavosParaString(valor: number | bigint): string {
   const inteirosStr = (abs / 100n).toString();
   return `${negativo ? '-' : ''}${inteirosStr},${centavosStr}`;
 }
+
+function formatarDinheiroInput(valor: Centavos): string {
+  const negativo = valor < 0n;
+  const abs = negativo ? -valor : valor;
+  const centavosStr = (abs % 100n).toString().padStart(2, '0');
+  const inteirosStr = (abs / 100n).toString();
+  const comMilhar = inteirosStr.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  return `${negativo ? '-' : ''}${comMilhar},${centavosStr}`;
+}
+
+function formatarInteiroDigitado(texto: string): string {
+  const apenasDigitos = texto.replace(/\D/g, '');
+  if (apenasDigitos === '') return '';
+  if (/^0+$/.test(apenasDigitos)) return '0';
+  const num = BigInt(apenasDigitos);
+  return num.toLocaleString('pt-BR');
+}
+
 const inputClasse = 'w-28 rounded-lg px-3 py-2 text-right numeros';
 
 function formatarLeituraAnterior(valor: Mililitros): string {
@@ -187,16 +205,43 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
         setEntradasEstoque(contexto.entradasDoDia);
         if (contexto.valoresSalvos) {
           const vs = contexto.valoresSalvos;
-          setLeituras(vs.leituras);
-          setContagens(vs.contagens);
-          setVendasIndividuais(vs.vendasIndividuais);
-          setPix(vs.pix);
-          setDebito(vs.debito);
-          setCredito(vs.credito);
-          setFiadosConcedidos(vs.fiadosConcedidos || []);
-          setFiadosRecebidos(vs.fiadosRecebidos || []);
-          setContado(vs.contado);
-          setObservacao(vs.observacao);
+          
+          // Format integers on load
+          const formattedLeituras: Record<string, string> = {};
+          for (const [k, v] of Object.entries(vs.leituras || {})) {
+            formattedLeituras[k] = formatarInteiroDigitado(String(v));
+          }
+          setLeituras(formattedLeituras);
+
+          const formattedContagens: Record<string, string> = {};
+          for (const [k, v] of Object.entries(vs.contagens || {})) {
+            formattedContagens[k] = formatarInteiroDigitado(String(v));
+          }
+          setContagens(formattedContagens);
+
+          const formattedVendasInd: Record<string, string> = {};
+          for (const [k, v] of Object.entries(vs.vendasIndividuais || {})) {
+            formattedVendasInd[k] = formatarInteiroDigitado(String(v));
+          }
+          setVendasIndividuais(formattedVendasInd);
+
+          setPix(formatarDinheiroInput(parseReais(vs.pix || '')));
+          setDebito(formatarDinheiroInput(parseReais(vs.debito || '')));
+          setCredito(formatarDinheiroInput(parseReais(vs.credito || '')));
+          setFiadosConcedidos(
+            (vs.fiadosConcedidos || []).map((f: any) => ({
+              ...f,
+              valor: formatarDinheiroInput(parseReais(f.valor || '')),
+            }))
+          );
+          setFiadosRecebidos(
+            (vs.fiadosRecebidos || []).map((f: any) => ({
+              ...f,
+              valor: formatarDinheiroInput(parseReais(f.valor || '')),
+            }))
+          );
+          setContado(formatarDinheiroInput(parseReais(vs.contado || '')));
+          setObservacao(vs.observacao || '');
           if ((vs.fiadosConcedidos && vs.fiadosConcedidos.length > 0) || (vs.fiadosRecebidos && vs.fiadosRecebidos.length > 0)) {
             setMostrarFiados(true);
           } else {
@@ -717,7 +762,7 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
                       }}
                       inputMode="decimal"
                       value={leituras[b.id] ?? ''}
-                      onChange={(e) => setLeituras((s) => ({ ...s, [b.id]: e.target.value }))}
+                      onChange={(e) => setLeituras((s) => ({ ...s, [b.id]: formatarInteiroDigitado(e.target.value) }))}
                       onKeyDown={(e) => aoEnter(e, meu)}
                       onFocus={(e) => {
                         if (e.target.value === '0') {
@@ -768,7 +813,7 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
                       }}
                       inputMode="numeric"
                       value={contagens[p.id] ?? ''}
-                      onChange={(e) => setContagens((s) => ({ ...s, [p.id]: e.target.value }))}
+                      onChange={(e) => setContagens((s) => ({ ...s, [p.id]: formatarInteiroDigitado(e.target.value) }))}
                       onKeyDown={(e) => aoEnter(e, meu)}
                       onFocus={(e) => {
                         if (e.target.value === '0') {
@@ -813,7 +858,7 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
                         }}
                         inputMode="numeric"
                         value={vendasIndividuais[p.id] ?? ''}
-                        onChange={(e) => setVendasIndividuais((s) => ({ ...s, [p.id]: e.target.value }))}
+                        onChange={(e) => setVendasIndividuais((s) => ({ ...s, [p.id]: formatarInteiroDigitado(e.target.value) }))}
                         onKeyDown={(e) => aoEnter(e, meu)}
                         onFocus={(e) => {
                           if (e.target.value === '0') {
@@ -1130,6 +1175,9 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
               aria-label="Dinheiro contado na gaveta"
               value={contado}
               onChange={(e) => setContado(e.target.value)}
+              onBlur={(e) => {
+                setContado(formatarDinheiroInput(parseReais(e.target.value)));
+              }}
               placeholder="0,00"
               onFocus={(e) => {
                 if (e.target.value === '0' || e.target.value === '0,00') setContado('');
@@ -1284,6 +1332,9 @@ function CampoMoeda({
         aria-label={rotulo}
         value={valor}
         onChange={(e) => aoMudar(e.target.value)}
+        onBlur={(e) => {
+          aoMudar(formatarDinheiroInput(parseReais(e.target.value)));
+        }}
         placeholder="0,00"
         onFocus={(e) => {
           if (e.target.value === '0' || e.target.value === '0,00') {

@@ -26,7 +26,7 @@ export function paraCentavos(valor: number | string | null | undefined): Centavo
 /** litros (numeric, possivelmente fracionário) → Mililitros (inteiro). */
 export function litrosParaMililitros(litros: number | string | null | undefined): Mililitros {
   if (litros === null || litros === undefined) return asMililitros(0n);
-  const valorStr = String(litros).trim().replace(',', '.');
+  const valorStr = String(litros).trim().replace(/\./g, '').replace(',', '.');
   if (valorStr === '') return asMililitros(0n);
   const num = Number(valorStr);
   if (isNaN(num)) return asMililitros(0n);
@@ -36,7 +36,7 @@ export function litrosParaMililitros(litros: number | string | null | undefined)
 /** quantidade (numeric) → Quantidade (inteiro na v1). */
 export function paraQuantidade(valor: number | string | null | undefined): Quantidade {
   if (valor === null || valor === undefined) return asQuantidade(0n);
-  const valorStr = String(valor).trim().replace(',', '.');
+  const valorStr = String(valor).trim().replace(/\./g, '').replace(',', '.');
   if (valorStr === '') return asQuantidade(0n);
   const num = Number(valorStr);
   if (isNaN(num)) return asQuantidade(0n);
