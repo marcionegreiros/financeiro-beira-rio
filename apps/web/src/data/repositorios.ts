@@ -927,6 +927,10 @@ export async function obterVendasMes(dataBase: string): Promise<{
   vendaMes: Centavos;
   litrosMes: number;
   vendasDiarias: { data: string; valor: number }[];
+  litrosGasolinaMes: number;
+  litrosDieselMes: number;
+  vendaGasolinaMes: Centavos;
+  vendaDieselMes: Centavos;
 }> {
   // Filtra movimentos do mês atual (em ordem cronológica para os litros)
   const inicioMes = dataBase.slice(0, 8) + '01';
@@ -939,7 +943,16 @@ export async function obterVendasMes(dataBase: string): Promise<{
     .order('data', { ascending: true });
 
   if (!fechamentos || fechamentos.length === 0) {
-    return { vendaDia: asCentavos(0n), vendaMes: asCentavos(0n), litrosMes: 0, vendasDiarias: [] };
+    return {
+      vendaDia: asCentavos(0n),
+      vendaMes: asCentavos(0n),
+      litrosMes: 0,
+      vendasDiarias: [],
+      litrosGasolinaMes: 0,
+      litrosDieselMes: 0,
+      vendaGasolinaMes: asCentavos(0n),
+      vendaDieselMes: asCentavos(0n),
+    };
   }
 
   const ids = fechamentos.map((f) => f.id);
@@ -1000,17 +1013,71 @@ export async function obterVendasMes(dataBase: string): Promise<{
     mapa.set(l.bomba_id, Number(l.leitura));
     leiturasPorFech.set(l.fechamento_id, mapa);
   }
+
+  // Busca detalhes das bombas e preços históricos
+  const [
+    { data: bombasRaw },
+    { data: precosRaw }
+  ] = await Promise.all([
+    supabase.from('bomba').select('id, nome, tanque(id, combustivel(id, nome))'),
+    supabase.from('preco_combustivel').select('combustivel_id, valor_centavos, valido_a_partir_de')
+  ]);
+
+  const combPorBomba = new Map<string, { id: string; nome: string }>();
+  for (const b of (bombasRaw ?? []) as any[]) {
+    const comb = Array.isArray(b.tanque?.combustivel) ? b.tanque.combustivel[0] : b.tanque?.combustivel;
+    if (comb) {
+      combPorBomba.set(b.id, { id: comb.id, nome: comb.nome });
+    }
+  }
+
+  const precosPorComb = new Map<string, Array<{ valor: bigint; data: string }>>();
+  for (const p of (precosRaw ?? []) as any[]) {
+    const list = precosPorComb.get(p.combustivel_id) ?? [];
+    list.push({ valor: BigInt(p.valor_centavos), data: p.valido_a_partir_de });
+    precosPorComb.set(p.combustivel_id, list);
+  }
+  for (const [_, list] of precosPorComb) {
+    list.sort((a, b) => b.data.localeCompare(a.data));
+  }
+
+  const obterPrecoNaData = (combId: string, dataStr: string): bigint => {
+    const list = precosPorComb.get(combId) ?? [];
+    const match = list.find((p) => p.data <= dataStr);
+    return match ? match.valor : 0n;
+  };
+
   const sequencia = baseline ? [baseline, ...fechamentos] : fechamentos;
   let litrosMes = 0;
+  let litrosGasolinaMes = 0;
+  let litrosDieselMes = 0;
+  let vendaGasolinaMes = 0n;
+  let vendaDieselMes = 0n;
+
   for (let i = 1; i < sequencia.length; i++) {
-    const atual = leiturasPorFech.get(sequencia[i]!.id);
+    const f = sequencia[i]!;
+    const atual = leiturasPorFech.get(f.id);
     const anterior = leiturasPorFech.get(sequencia[i - 1]!.id);
     if (!atual) continue;
     for (const [bombaId, leituraAtual] of atual) {
       // Sem leitura anterior conhecida para a bomba → não dá pra inferir venda (0).
       const leituraAnt = anterior?.get(bombaId) ?? leituraAtual;
       const diff = leituraAtual - leituraAnt;
-      if (diff > 0) litrosMes += diff;
+      if (diff > 0) {
+        litrosMes += diff;
+        const comb = combPorBomba.get(bombaId);
+        if (comb) {
+          const volumeML = BigInt(Math.round(diff * 1000));
+          const valorVenda = (volumeML * obterPrecoNaData(comb.id, f.data)) / 1000n;
+          if (comb.nome.toLowerCase().includes('gasolina')) {
+            litrosGasolinaMes += diff;
+            vendaGasolinaMes += valorVenda;
+          } else if (comb.nome.toLowerCase().includes('diesel')) {
+            litrosDieselMes += diff;
+            vendaDieselMes += valorVenda;
+          }
+        }
+      }
     }
   }
 
@@ -1026,6 +1093,10 @@ export async function obterVendasMes(dataBase: string): Promise<{
     vendaMes: asCentavos(vendaMes),
     litrosMes,
     vendasDiarias,
+    litrosGasolinaMes,
+    litrosDieselMes,
+    vendaGasolinaMes: asCentavos(vendaGasolinaMes),
+    vendaDieselMes: asCentavos(vendaDieselMes),
   };
 }
 
@@ -1591,6 +1662,7 @@ export async function obterDadosUltimoFechamento(): Promise<ResumoFechamentoComp
 
   if (e1 || !fechRaw || fechRaw.length === 0) return null;
   const ultimo = fechRaw[0];
+  if (!ultimo) return null;
   const fechId = ultimo.id;
 
   const [
@@ -1896,3 +1968,40 @@ export async function obterHistoricoCapital(
   return historico.reverse();
 }
 
+export interface MovimentoDetalhado {
+  tipo: string;
+  valor: Centavos;
+  descricao: string | null;
+  formaPagamento: string;
+}
+
+export interface FiadoDetalhado {
+  clienteNome: string;
+  valor: Centavos;
+}
+
+export async function obterMovimentosFechamento(fechamentoId: string): Promise<MovimentoDetalhado[]> {
+  const { data, error } = await supabase
+    .from('movimento')
+    .select('tipo, valor_centavos, descricao, forma_pagamento')
+    .eq('fechamento_id', fechamentoId);
+  if (error || !data) return [];
+  return data.map((m) => ({
+    tipo: m.tipo,
+    valor: asCentavos(BigInt(m.valor_centavos)),
+    descricao: m.descricao,
+    formaPagamento: m.forma_pagamento,
+  }));
+}
+
+export async function obterFiadosFechamento(fechamentoId: string): Promise<FiadoDetalhado[]> {
+  const { data, error } = await supabase
+    .from('fiado')
+    .select('valor_centavos, cliente:cliente_id(nome)')
+    .eq('fechamento_id', fechamentoId);
+  if (error || !data) return [];
+  return (data as any[]).map((f) => ({
+    clienteNome: f.cliente?.nome ?? 'Desconhecido',
+    valor: asCentavos(BigInt(f.valor_centavos)),
+  }));
+}

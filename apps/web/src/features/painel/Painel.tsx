@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, type ReactNode } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { formatReais, asCentavos, type Centavos } from '../../lib/money';
 import { formatLitros } from '../../domain/tipos';
 import { litrosParaMililitros } from '../../data/conversao';
@@ -15,6 +15,8 @@ import {
   obterHistoricoCapital,
   listarSaldos,
   listarFechamentos,
+  obterMovimentosFechamento,
+  obterFiadosFechamento,
   type TanquePainel,
   type AlertasDashboard,
   type ResumoFechamentoCompleto,
@@ -22,6 +24,8 @@ import {
   type CapitalHistorico,
   type SaldoConta,
   type FechamentoResumo,
+  type MovimentoDetalhado,
+  type FiadoDetalhado,
 } from '../../data/repositorios';
 import {
   BarChart,
@@ -47,6 +51,10 @@ interface Dados {
     vendaMes: Centavos;
     litrosMes: number;
     vendasDiarias: { data: string; valor: number }[];
+    litrosGasolinaMes: number;
+    litrosDieselMes: number;
+    vendaGasolinaMes: Centavos;
+    vendaDieselMes: Centavos;
   };
   alertas: AlertasDashboard;
   ultimoFechamento: ResumoFechamentoCompleto | null;
@@ -99,8 +107,10 @@ function agruparPorSemana(dados: { data: string; valor: number }[]) {
   for (let i = 0; i < dados.length; i += 7) {
     const chunk = dados.slice(i, i + 7);
     const soma = chunk.reduce((sum, item) => sum + item.valor, 0);
-    const labelInicio = formatDataLabel(chunk[0].data);
-    const labelFim = formatDataLabel(chunk[chunk.length - 1].data);
+    const firstItem = chunk[0];
+    const lastItem = chunk[chunk.length - 1];
+    const labelInicio = firstItem ? formatDataLabel(firstItem.data) : '';
+    const labelFim = lastItem ? formatDataLabel(lastItem.data) : '';
     result.push({
       data: `${labelInicio.split('/')[0]}-${labelFim.split('/')[0]}`,
       valor: soma,
@@ -115,6 +125,45 @@ export function Painel() {
   const [modoCapitalTotal, setModoCapitalTotal] = useState(false);
   const [periodoFiltro, setPeriodoFiltro] = useState<'7d' | '30d' | '90d' | 'mes'>('mes');
   const cores = useCoresTema();
+
+  const [detalheFechamentoAba, setDetalheFechamentoAba] = useState<'vendas' | 'despesas' | 'fiado' | 'diferenca' | 'depositar' | null>(null);
+  const [carregandoDetalhe, setCarregandoDetalhe] = useState(false);
+  const [movimentosDetalhe, setMovimentosDetalhe] = useState<MovimentoDetalhado[]>([]);
+  const [fiadosDetalhe, setFiadosDetalhe] = useState<FiadoDetalhado[]>([]);
+
+  const alternarAbaDetalhe = async (aba: 'vendas' | 'despesas' | 'fiado' | 'diferenca' | 'depositar') => {
+    if (detalheFechamentoAba === aba) {
+      setDetalheFechamentoAba(null);
+      return;
+    }
+    
+    setDetalheFechamentoAba(aba);
+    
+    if (!dados?.ultimoFechamento) return;
+    const fechId = dados.ultimoFechamento.id;
+
+    if (aba === 'despesas' && movimentosDetalhe.length === 0) {
+      setCarregandoDetalhe(true);
+      try {
+        const movs = await obterMovimentosFechamento(fechId);
+        setMovimentosDetalhe(movs.filter(m => ['despesa', 'prolabore', 'vale'].includes(m.tipo)));
+      } catch (err) {
+        console.error('Erro ao buscar despesas do fechamento:', err);
+      } finally {
+        setCarregandoDetalhe(false);
+      }
+    } else if (aba === 'fiado' && fiadosDetalhe.length === 0) {
+      setCarregandoDetalhe(true);
+      try {
+        const fis = await obterFiadosFechamento(fechId);
+        setFiadosDetalhe(fis);
+      } catch (err) {
+        console.error('Erro ao buscar fiados do fechamento:', err);
+      } finally {
+        setCarregandoDetalhe(false);
+      }
+    }
+  };
 
   const hoje = useMemo(() => new Date().toLocaleDateString('en-CA', { timeZone: 'America/Manaus' }), []);
 
@@ -161,14 +210,6 @@ export function Painel() {
 
   const fechamentoHojeFeito = useMemo(() => dados?.ultimoFechamento?.data === hoje, [dados, hoje]);
 
-  // Calcula estatísticas básicas das vendas
-  const totalVendasMes = dados?.vendas.vendasDiarias.reduce((acc, curr) => acc + curr.valor, 0) || 0;
-  const diasCom Venda = dados?.vendas.vendasDiarias.length || 1;
-  const mediaDiaria = totalVendasMes / diasComVenda;
-  const picoFaturamento = dados?.vendas.vendasDiarias.length
-    ? Math.max(...dados.vendas.vendasDiarias.map((d) => d.valor))
-    : 0;
-
   // Filtragem e agrupamento dinâmico de vendas
   const vendasFiltradas = useMemo(() => {
     if (!dados) return [];
@@ -194,266 +235,522 @@ export function Painel() {
   const mediaDiariaFiltrada = useMemo(() => totalVendasFiltradas / (vendasFiltradas.length || 1), [totalVendasFiltradas, vendasFiltradas]);
 
   return (
-    <main className="grid gap-8 lg:grid-cols-3 items-start">
-      {/* Coluna Esquerda Operacional (Sempre no canto superior esquerdo em telas grandes) */}
-      <div className="flex flex-col gap-6 lg:col-span-1">
+    <div className="flex flex-col gap-6 w-full">
+      <header className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-ambar flex items-center gap-1.5">
+            <span className="h-1.5 w-1.5 rounded-full bg-ambar animate-pulse" />
+            Pontão Beira Rio
+          </p>
+          <h1 className="mt-1 font-display text-3xl font-bold tracking-tight text-claro">Painel de Controle</h1>
+          <p className="mt-1 text-xs text-suave">
+            Dados operacionais apurados até {new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Manaus', day: '2-digit', month: 'long', year: 'numeric' })}
+          </p>
+        </div>
         {dados && (
-          <>
-            {/* Tanques */}
-            <section className="cartao flex flex-col p-6">
-              <div className="mb-5">
-                <h2 className="font-display text-lg font-bold text-claro">Tanques de Combustível</h2>
-                <p className="text-xs text-suave">Nível físico na última medição de régua</p>
-              </div>
-              <div className="flex flex-1 items-center justify-around gap-4 flex-wrap py-2">
-                {dados.tanques.map((t) => (
-                  <MedidorTanque
-                    key={t.id}
-                    nome={t.nome}
-                    combustivel={t.combustivel}
-                    nivel={t.nivel}
-                    capacidade={t.capacidade}
-                    nivelAlerta={t.nivelAlerta}
-                  />
-                ))}
-              </div>
-            </section>
-
-            {/* Painel de Contas */}
-            <PainelContas saldos={dados.saldosContas} />
-          </>
-        )}
-      </div>
-
-      {/* Coluna Direita (Header, Banners, KPIs, Gráficos) */}
-      <div className="flex flex-col gap-6 lg:col-span-2">
-        <header className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-ambar flex items-center gap-1.5">
-              <span className="h-1.5 w-1.5 rounded-full bg-ambar animate-pulse" />
-              Pontão Beira Rio
-            </p>
-            <h1 className="mt-1 font-display text-3xl font-bold tracking-tight text-claro">Painel de Controle</h1>
-            <p className="mt-1 text-xs text-suave">
-              Dados operacionais apurados até {new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Manaus', day: '2-digit', month: 'long', year: 'numeric' })}
-            </p>
+          <div className="flex p-0.5 rounded-xl border border-borda bg-ardosia/50 backdrop-blur-sm shadow-[var(--sombra-sm)] select-none">
+            <button
+              type="button"
+              onClick={() => setModoCapitalTotal(false)}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all duration-200 cursor-pointer ${
+                !modoCapitalTotal
+                  ? 'bg-ambar text-sobreacento shadow-sm shadow-ambar/20'
+                  : 'text-suave hover:text-claro'
+              }`}
+            >
+              Capital Operacional
+            </button>
+            <button
+              type="button"
+              onClick={() => setModoCapitalTotal(true)}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all duration-200 cursor-pointer ${
+                modoCapitalTotal
+                  ? 'bg-ambar text-sobreacento shadow-sm shadow-ambar/20'
+                  : 'text-suave hover:text-claro'
+              }`}
+            >
+              Capital Total
+            </button>
           </div>
-          {dados && (
-            <div className="flex p-0.5 rounded-xl border border-borda bg-ardosia/50 backdrop-blur-sm shadow-[var(--sombra-sm)] select-none">
-              <button
-                type="button"
-                onClick={() => setModoCapitalTotal(false)}
-                className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all duration-200 cursor-pointer ${
-                  !modoCapitalTotal
-                    ? 'bg-ambar text-sobreacento shadow-sm shadow-ambar/20'
-                    : 'text-suave hover:text-claro'
-                }`}
-              >
-                Capital Operacional
-              </button>
-              <button
-                type="button"
-                onClick={() => setModoCapitalTotal(true)}
-                className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all duration-200 cursor-pointer ${
-                  modoCapitalTotal
-                    ? 'bg-ambar text-sobreacento shadow-sm shadow-ambar/20'
-                    : 'text-suave hover:text-claro'
-                }`}
-              >
-                Capital Total
-              </button>
+        )}
+      </header>
+
+      {erro && (
+        <p className="rounded-xl border border-negativo/30 bg-negativo/10 p-4 text-sm font-medium text-negativo">
+          {erro}
+        </p>
+      )}
+
+      <main className="grid gap-8 lg:grid-cols-3 items-start">
+        {/* Coluna Esquerda (Banners, KPIs, Gráficos) */}
+        <div className="flex flex-col gap-6 lg:col-span-2">
+          {!dados && !erro && (
+            <div className="grid gap-6 sm:grid-cols-2">
+              {[0, 1].map((i) => (
+                <div key={i} className="cartao h-[180px] animate-pulse opacity-60" />
+              ))}
             </div>
           )}
-        </header>
 
-        {erro && (
-          <p className="rounded-xl border border-negativo/30 bg-negativo/10 p-4 text-sm font-medium text-negativo">
-            {erro}
-          </p>
-        )}
+          {dados && (
+            <>
+              {/* Caixa de Fechamento Pendente com Resumo do Último Dia (Banner Compacto) */}
+              {!fechamentoHojeFeito && dados.ultimoFechamento && (
+                <section className="animar-surgir rounded-xl border border-atencao/20 bg-atencao/[0.02] p-4 shadow-sm flex flex-col gap-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-borda/30 pb-2">
+                    <div className="flex items-center gap-2">
+                      <span className="h-1.5 w-1.5 rounded-full bg-atencao animate-pulse" />
+                      <h2 className="text-xs font-bold text-claro uppercase tracking-wider">Fechamento de hoje pendente</h2>
+                    </div>
+                    <span className="text-[10px] text-suave">
+                      Exibindo último fechamento ({new Date(dados.ultimoFechamento.data + 'T00:00:00').toLocaleDateString('pt-BR')}) por <strong>{dados.ultimoFechamento.responsavelNome ?? 'Sistema'}</strong>
+                    </span>
+                  </div>
+                  
+                  <div className="grid gap-3 grid-cols-2 sm:grid-cols-5 text-xs select-none">
+                    {/* Card Venda Física */}
+                    <button
+                      type="button"
+                      onClick={() => alternarAbaDetalhe('vendas')}
+                      className={`flex flex-col text-left p-3.5 rounded-xl border transition-all duration-300 cursor-pointer ${
+                        detalheFechamentoAba === 'vendas'
+                          ? 'bg-ardosia border-borda/80 shadow-inner scale-[0.98]'
+                          : 'border-borda/30 bg-ardosia/20 hover:border-borda/80 hover:bg-ardosia/40 hover:shadow-md hover:-translate-y-0.5'
+                      }`}
+                    >
+                      <span className="text-[10px] text-suave uppercase">Venda Física</span>
+                      <span className="numeros font-bold text-claro mt-1.5">{formatReais(dados.ultimoFechamento.vendaFisica)}</span>
+                    </button>
 
-        {!dados && !erro && (
-          <div className="grid gap-4 sm:grid-cols-3">
-            {[0, 1, 2].map((i) => (
-              <div key={i} className="cartao h-[104px] animate-pulse opacity-60" />
-            ))}
-          </div>
-        )}
+                    {/* Card Despesas */}
+                    <button
+                      type="button"
+                      onClick={() => alternarAbaDetalhe('despesas')}
+                      className={`flex flex-col text-left p-3.5 rounded-xl border transition-all duration-300 cursor-pointer ${
+                        detalheFechamentoAba === 'despesas'
+                          ? 'bg-ardosia border-borda/80 shadow-inner scale-[0.98]'
+                          : 'border-borda/30 bg-ardosia/20 hover:border-borda/80 hover:bg-ardosia/40 hover:shadow-md hover:-translate-y-0.5'
+                      }`}
+                    >
+                      <span className="text-[10px] text-suave uppercase">Despesas ($)</span>
+                      <span className="numeros font-bold text-claro mt-1.5">{formatReais(dados.ultimoFechamento.despesa)}</span>
+                    </button>
 
-        {dados && (
-          <>
-            {/* Caixa de Fechamento Pendente com Resumo do Último Dia */}
-            {!fechamentoHojeFeito && dados.ultimoFechamento && (
-              <section className="animar-surgir rounded-2xl border border-atencao/30 bg-gradient-to-br from-atencao/[0.02] to-atencao/[0.05] p-6 shadow-sm border-l-4 border-l-atencao">
-                <div className="flex flex-wrap items-center justify-between gap-4 border-b border-borda pb-4">
+                    {/* Card Fiado */}
+                    <button
+                      type="button"
+                      onClick={() => alternarAbaDetalhe('fiado')}
+                      className={`flex flex-col text-left p-3.5 rounded-xl border transition-all duration-300 cursor-pointer ${
+                        detalheFechamentoAba === 'fiado'
+                          ? 'bg-ardosia border-borda/80 shadow-inner scale-[0.98]'
+                          : 'border-borda/30 bg-ardosia/20 hover:border-borda/80 hover:bg-ardosia/40 hover:shadow-md hover:-translate-y-0.5'
+                      }`}
+                    >
+                      <span className="text-[10px] text-suave uppercase">Fiado Concedido</span>
+                      <span className="numeros font-bold text-claro mt-1.5">{formatReais(dados.ultimoFechamento.fiadoConcedido)}</span>
+                    </button>
+
+                    {/* Card Diferença */}
+                    <button
+                      type="button"
+                      onClick={() => alternarAbaDetalhe('diferenca')}
+                      className={`flex flex-col text-left p-3.5 rounded-xl border transition-all duration-300 cursor-pointer ${
+                        detalheFechamentoAba === 'diferenca'
+                          ? 'bg-ardosia border-borda/80 shadow-inner scale-[0.98]'
+                          : 'border-borda/30 bg-ardosia/20 hover:border-borda/80 hover:bg-ardosia/40 hover:shadow-md hover:-translate-y-0.5'
+                      }`}
+                    >
+                      <span className="text-[10px] text-suave uppercase">Diferença</span>
+                      <span className={`numeros font-bold mt-1.5 ${
+                        dados.ultimoFechamento.diferenca < 0n
+                          ? 'text-negativo'
+                          : dados.ultimoFechamento.diferenca > 0n
+                            ? 'text-positivo'
+                            : 'text-claro'
+                      }`}>
+                        {formatReais(dados.ultimoFechamento.diferenca)}
+                      </span>
+                    </button>
+
+                    {/* Card Valor a Depositar */}
+                    <button
+                      type="button"
+                      onClick={() => alternarAbaDetalhe('depositar')}
+                      className={`flex flex-col text-left p-3.5 rounded-xl border transition-all duration-300 cursor-pointer ${
+                        detalheFechamentoAba === 'depositar'
+                          ? 'bg-ambar/15 border-ambar/30 shadow-inner scale-[0.98]'
+                          : 'bg-ambar/5 border-ambar/15 hover:border-ambar/30 hover:bg-ambar/10 hover:shadow-md hover:-translate-y-0.5'
+                      }`}
+                    >
+                      <span className="text-[9px] text-ambar font-semibold uppercase">Valor a Depositar</span>
+                      <span className="numeros font-extrabold text-ambar mt-1.5">{formatReais(dados.ultimoFechamento.aDepositar)}</span>
+                    </button>
+                  </div>
+
+                  {/* Área de Detalhes Expandida */}
+                  {detalheFechamentoAba && (
+                    <div className="animar-surgir mt-2 p-3 bg-ardosia/30 rounded-lg border border-borda/30 text-xs text-claro/90">
+                      {carregandoDetalhe ? (
+                        <div className="flex items-center justify-center py-4 gap-2 text-suave">
+                          <svg className="animate-spin h-4 w-4 text-ambar" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                          </svg>
+                          Carregando detalhes...
+                        </div>
+                      ) : (
+                        <>
+                          {detalheFechamentoAba === 'vendas' && (
+                            <div className="space-y-2">
+                              <h4 className="font-bold border-b border-borda/20 pb-1 text-claro uppercase text-[10px]">Detalhamento de Recebimentos</h4>
+                              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 py-1">
+                                <div>
+                                  <span className="text-suave block text-[9px] uppercase">Dinheiro (Caixa)</span>
+                                  <span className="numeros font-semibold">{formatReais(dados.ultimoFechamento.dinheiro)}</span>
+                                </div>
+                                <div>
+                                  <span className="text-suave block text-[9px] uppercase">PIX</span>
+                                  <span className="numeros font-semibold">{formatReais(dados.ultimoFechamento.pix)}</span>
+                                </div>
+                                <div>
+                                  <span className="text-suave block text-[9px] uppercase">Cartão de Débito</span>
+                                  <span className="numeros font-semibold">{formatReais(dados.ultimoFechamento.debito)}</span>
+                                </div>
+                                <div>
+                                  <span className="text-suave block text-[9px] uppercase">Cartão de Crédito</span>
+                                  <span className="numeros font-semibold">{formatReais(dados.ultimoFechamento.credito)}</span>
+                                </div>
+                              </div>
+                              <p className="text-[10px] text-suave border-t border-borda/10 pt-1.5 mt-1">
+                                * Venda Física total (R$ {formatReais(dados.ultimoFechamento.vendaFisica)}) inclui recebimentos em dinheiro, PIX, débito, crédito e fiados concedidos (R$ {formatReais(dados.ultimoFechamento.fiadoConcedido)}).
+                              </p>
+                            </div>
+                          )}
+
+                          {detalheFechamentoAba === 'despesas' && (
+                            <div className="space-y-2">
+                              <h4 className="font-bold border-b border-borda/20 pb-1 text-claro uppercase text-[10px]">Movimentos de Saída do Caixa ($)</h4>
+                              {movimentosDetalhe.length === 0 ? (
+                                <p className="text-suave py-2 text-center">Nenhuma despesa ou retirada registrada neste fechamento.</p>
+                              ) : (
+                                <div className="max-h-[160px] overflow-y-auto divide-y divide-borda/20 pr-1">
+                                  {movimentosDetalhe.map((m, idx) => (
+                                    <div key={idx} className="flex justify-between py-1.5 text-[11px] last:pb-0">
+                                      <div className="min-w-0 flex-1 mr-2">
+                                        <p className="font-medium text-claro truncate">{m.descricao || 'Sem descrição'}</p>
+                                        <span className="text-[9px] text-suave font-semibold uppercase tracking-wider">
+                                          {m.tipo === 'prolabore' ? 'Retirada de Sócio' : m.tipo === 'vale' ? 'Vale Salário' : 'Despesa'} ({m.formaPagamento})
+                                        </span>
+                                      </div>
+                                      <p className="numeros font-bold text-negativo text-right shrink-0">
+                                        -{formatReais(m.valor)}
+                                      </p>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {detalheFechamentoAba === 'fiado' && (
+                            <div className="space-y-2">
+                              <h4 className="font-bold border-b border-borda/20 pb-1 text-claro uppercase text-[10px]">Fiados Concedidos no Dia</h4>
+                              {fiadosDetalhe.length === 0 ? (
+                                <p className="text-suave py-2 text-center">Nenhuma venda fiado realizada neste fechamento.</p>
+                              ) : (
+                                <div className="max-h-[160px] overflow-y-auto divide-y divide-borda/20 pr-1">
+                                  {fiadosDetalhe.map((f, idx) => (
+                                    <div key={idx} className="flex justify-between py-1.5 text-[11px] last:pb-0">
+                                      <span className="font-medium text-claro truncate mr-2">{f.clienteNome}</span>
+                                      <span className="numeros font-bold text-claro/80 text-right shrink-0">
+                                        {formatReais(f.valor)}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {detalheFechamentoAba === 'diferenca' && (
+                            <div className="space-y-1 leading-relaxed">
+                              <h4 className="font-bold border-b border-borda/20 pb-1 text-claro uppercase text-[10px]">Análise de Diferença de Caixa</h4>
+                              <p className="pt-1">
+                                A diferença de caixa de <strong className={dados.ultimoFechamento.diferenca < 0n ? 'text-negativo' : dados.ultimoFechamento.diferenca > 0n ? 'text-positivo' : 'text-claro'}>{formatReais(dados.ultimoFechamento.diferenca)}</strong> representa o desvio entre o dinheiro real contado na gaveta e o valor esperado teoricamente pelo sistema.
+                              </p>
+                              <p className="text-suave text-[10px] mt-1.5">
+                                * Diferenças podem ocorrer devido a erros de troco, arredondamentos ou quebras de caixa não registradas.
+                              </p>
+                            </div>
+                          )}
+
+                          {detalheFechamentoAba === 'depositar' && (
+                            <div className="space-y-2">
+                              <h4 className="font-bold border-b border-borda/20 pb-1 text-ambar uppercase text-[10px]">Fórmula de Cálculo do Depósito</h4>
+                              <div className="space-y-1.5 text-[11px] font-mono leading-normal bg-ardosia/20 p-2 rounded border border-borda/10">
+                                <div className="flex justify-between">
+                                  <span className="text-suave">(+) Vendas em Dinheiro:</span>
+                                  <span className="numeros">{formatReais(dados.ultimoFechamento.dinheiro)}</span>
+                                </div>
+                                <div className="flex justify-between text-negativo">
+                                  <span className="text-suave">(-) Saídas em Dinheiro (Despesas/Vales):</span>
+                                  <span className="numeros">-{formatReais(dados.ultimoFechamento.despesa)}</span>
+                                </div>
+                                <div className="flex justify-between text-positivo">
+                                  <span className="text-suave">(+) Recebimentos de Fiado (Dinheiro):</span>
+                                  <span className="numeros">+{formatReais(dados.ultimoFechamento.fiadoRecebido)}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                  <span className="text-suave">(+) Troco Fixo de Abertura:</span>
+                                  <span className="numeros">+{formatReais(asCentavos(BigInt(dados.ultimoFechamento.esperado) - BigInt(dados.ultimoFechamento.dinheiro) + BigInt(dados.ultimoFechamento.despesa) - BigInt(dados.ultimoFechamento.fiadoRecebido)))}</span>
+                                </div>
+                                <div className="flex justify-between border-t border-borda/20 pt-1 font-bold">
+                                  <span className="text-claro">(=) Dinheiro Esperado:</span>
+                                  <span className="numeros">{formatReais(dados.ultimoFechamento.esperado)}</span>
+                                </div>
+                                <div className="flex justify-between text-suave">
+                                  <span className="text-suave">(+/-) Diferença de Caixa Contada:</span>
+                                  <span className={`numeros ${dados.ultimoFechamento.diferenca < 0n ? 'text-negativo' : 'text-positivo'}`}>
+                                    {dados.ultimoFechamento.diferenca >= 0n ? '+' : ''}{formatReais(dados.ultimoFechamento.diferenca)}
+                                  </span>
+                                </div>
+                                <div className="flex justify-between border-t border-borda/20 pt-1 font-bold">
+                                  <span className="text-claro">(=) Total Contado:</span>
+                                  <span className="numeros">{formatReais(dados.ultimoFechamento.contado)}</span>
+                                </div>
+                                <div className="flex justify-between text-suave">
+                                  <span className="text-suave">(-) Retenção de Troco Fixo:</span>
+                                  <span className="numeros">-{formatReais(asCentavos(BigInt(dados.ultimoFechamento.esperado) - BigInt(dados.ultimoFechamento.dinheiro) + BigInt(dados.ultimoFechamento.despesa) - BigInt(dados.ultimoFechamento.fiadoRecebido)))}</span>
+                                </div>
+                                <div className="flex justify-between border-t border-ambar/30 pt-1 font-extrabold text-ambar">
+                                  <span>(=) Valor Líquido a Depositar:</span>
+                                  <span className="numeros">{formatReais(dados.ultimoFechamento.aDepositar)}</span>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  )}
+                </section>
+              )}
+
+              {/* Alertas */}
+              {exibeAlerta && (
+                <section className="animar-surgir relative overflow-hidden rounded-2xl border border-negativo/30 bg-gradient-to-r from-negativo/[0.03] to-negativo/[0.08] p-5 shadow-sm shadow-negativo/5">
+                  <div className="absolute inset-y-0 left-0 w-1 bg-negativo/80" />
+                  <h2 className="mb-3 flex items-center gap-2 font-display font-bold text-negativo">
+                    <svg className="h-5 w-5 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+                    </svg>
+                    Controle de Estoque e Nível Crítico
+                  </h2>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {dados.alertas.tanquesBaixo.map((t) => (
+                      <div key={t.id} className="flex items-center gap-3 rounded-xl border border-negativo/15 bg-ardosia/40 p-3 text-sm">
+                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-negativo/10 font-bold text-negativo text-xs">!</span>
+                        <div className="min-w-0 flex-1">
+                          <p className="font-semibold text-claro truncate">Tanque {t.nome}</p>
+                          <p className="text-xs text-suave mt-0.5">Nível: <strong className="text-negativo font-bold">{t.litros}L</strong> (Alerta: {t.limite}L)</p>
+                        </div>
+                      </div>
+                    ))}
+                    {dados.alertas.produtosBaixo.map((p) => (
+                      <div key={p.id} className="flex items-center gap-3 rounded-xl border border-negativo/15 bg-ardosia/40 p-3 text-sm">
+                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-negativo/10 font-bold text-negativo text-xs">!</span>
+                        <div className="min-w-0 flex-1">
+                          <p className="font-semibold text-claro truncate">{p.nome}</p>
+                          <p className="text-xs text-suave mt-0.5">Estoque: <strong className="text-negativo font-bold">{p.quantidade} un</strong> (Alerta: {p.limite})</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {/* KPIs Simétricos (Faturamento do Mês e Volume Físico do Mês) */}
+              <section className="grid gap-6 sm:grid-cols-2">
+                {/* Card 1: Faturamento do Mês */}
+                <div className="cartao relative overflow-hidden p-6 hover:border-[color-mix(in_srgb,var(--color-ambar)_20%,transparent)] transition-all duration-300 flex flex-col justify-between min-h-[220px]">
                   <div>
-                    <h2 className="flex items-center gap-2 font-display text-lg font-bold text-claro">
-                      <span className="h-2 w-2 rounded-full bg-atencao animate-pulse" />
-                      Fechamento de hoje pendente
-                    </h2>
-                    <p className="text-xs text-suave mt-0.5">
-                      O caixa de hoje ainda não foi encerrado pelo operador. Exibindo resumo do último dia fechado.
-                    </p>
-                  </div>
-                  <div className="rounded-lg bg-ardosia border border-borda px-3 py-1.5 text-xs text-claro/80 leading-normal">
-                    Último dia fechado:{' '}
-                    <strong className="text-ambar">
-                      {new Date(dados.ultimoFechamento.data + 'T00:00:00').toLocaleDateString('pt-BR')}
-                    </strong>{' '}
-                    por <strong>{dados.ultimoFechamento.responsavelNome ?? 'Sistema'}</strong>
-                  </div>
-                </div>
-
-                <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-5 mt-5">
-                  <MiniResumo Item="Venda Física" Valor={formatReais(dados.ultimoFechamento.vendaFisica)} />
-                  <MiniResumo Item="Despesas ($)" Valor={formatReais(dados.ultimoFechamento.despesa)} />
-                  <MiniResumo Item="Fiado Concedido" Valor={formatReais(dados.ultimoFechamento.fiadoConcedido)} />
-                  <MiniResumo
-                    Item="Diferença Caixa"
-                    Valor={formatReais(dados.ultimoFechamento.diferenca)}
-                    cor={
-                      dados.ultimoFechamento.diferenca < 0n
-                        ? 'text-negativo'
-                        : dados.ultimoFechamento.diferenca > 0n
-                          ? 'text-positivo'
-                          : 'text-claro'
-                    }
-                  />
-                  <MiniResumo
-                    Item="Valor a Depositar"
-                    Valor={formatReais(dados.ultimoFechamento.aDepositar)}
-                    destaque
-                  />
-                </div>
-              </section>
-            )}
-
-            {/* Alertas */}
-            {exibeAlerta && (
-              <section className="animar-surgir relative overflow-hidden rounded-2xl border border-negativo/30 bg-gradient-to-r from-negativo/[0.03] to-negativo/[0.08] p-5 shadow-sm shadow-negativo/5">
-                <div className="absolute inset-y-0 left-0 w-1 bg-negativo/80" />
-                <h2 className="mb-3 flex items-center gap-2 font-display font-bold text-negativo">
-                  <svg className="h-5 w-5 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-                  </svg>
-                  Controle de Estoque e Nível Crítico
-                </h2>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  {dados.alertas.tanquesBaixo.map((t) => (
-                    <div key={t.id} className="flex items-center gap-3 rounded-xl border border-negativo/15 bg-ardosia/40 p-3 text-sm">
-                      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-negativo/10 font-bold text-negativo text-xs">!</span>
-                      <div className="min-w-0 flex-1">
-                        <p className="font-semibold text-claro truncate">Tanque {t.nome}</p>
-                        <p className="text-xs text-suave mt-0.5">Nível: <strong className="text-negativo font-bold">{t.litros}L</strong> (Alerta: {t.limite}L)</p>
+                    <div className="flex items-center justify-between border-b border-borda/40 pb-3 mb-4">
+                      <div>
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-suave">Acumulado do Mês</span>
+                        <h3 className="font-display text-base font-bold text-claro mt-0.5">Vendas do Mês</h3>
+                      </div>
+                      <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-ambar/10 text-ambar shadow-sm shadow-ambar/5">
+                        {ICO.mes('h-5 w-5')}
+                      </span>
+                    </div>
+                    
+                    {/* Informações Principais Individuais */}
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <span className="text-[10px] font-semibold text-suave flex items-center gap-1.5 uppercase">
+                          <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
+                          Gasolina
+                        </span>
+                        <p className="numeros text-lg font-bold text-claro tracking-tight mt-1 truncate">
+                          {formatReais(dados.vendas.vendaGasolinaMes)}
+                        </p>
+                      </div>
+                      <div>
+                        <span className="text-[10px] font-semibold text-suave flex items-center gap-1.5 uppercase">
+                          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                          Diesel
+                        </span>
+                        <p className="numeros text-lg font-bold text-claro tracking-tight mt-1 truncate">
+                          {formatReais(dados.vendas.vendaDieselMes)}
+                        </p>
                       </div>
                     </div>
-                  ))}
-                  {dados.alertas.produtosBaixo.map((p) => (
-                    <div key={p.id} className="flex items-center gap-3 rounded-xl border border-negativo/15 bg-ardosia/40 p-3 text-sm">
-                      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-negativo/10 font-bold text-negativo text-xs">!</span>
-                      <div className="min-w-0 flex-1">
-                        <p className="font-semibold text-claro truncate">{p.nome}</p>
-                        <p className="text-xs text-suave mt-0.5">Estoque: <strong className="text-negativo font-bold">{p.quantidade} un</strong> (Alerta: {p.limite})</p>
+                  </div>
+
+                  <div className="mt-4 pt-4 border-t border-borda/30 space-y-2">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-suave flex items-center gap-1.5">
+                        <span className="h-1.5 w-1.5 rounded-full bg-slate-500" />
+                        Produtos & Outros
+                      </span>
+                      <span className="numeros font-bold text-claro/80">
+                        {formatReais(asCentavos(BigInt(dados.vendas.vendaMes) - BigInt(dados.vendas.vendaGasolinaMes) - BigInt(dados.vendas.vendaDieselMes)))}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-suave font-semibold">Total Faturado</span>
+                      <span className="numeros font-bold text-ambar">
+                        {formatReais(dados.vendas.vendaMes)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Card 2: Volume de Combustível (Mês) */}
+                <div className="cartao relative overflow-hidden p-6 hover:border-[color-mix(in_srgb,var(--color-ambar)_20%,transparent)] transition-all duration-300 flex flex-col justify-between min-h-[220px]">
+                  <div>
+                    <div className="flex items-center justify-between border-b border-borda/40 pb-3 mb-4">
+                      <div>
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-suave">Volume Físico</span>
+                        <h3 className="font-display text-base font-bold text-claro mt-0.5">Combustível Vendido</h3>
+                      </div>
+                      <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-500/10 text-blue-500 shadow-sm shadow-blue-500/5">
+                        {ICO.litros('h-5 w-5')}
+                      </span>
+                    </div>
+                    
+                    {/* Informações Principais Individuais */}
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <span className="text-[10px] font-semibold text-suave flex items-center gap-1.5 uppercase">
+                          <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
+                          Gasolina
+                        </span>
+                        <p className="numeros text-lg font-bold text-claro tracking-tight mt-1 truncate">
+                          {formatLitros(litrosParaMililitros(dados.vendas.litrosGasolinaMes))}
+                        </p>
+                      </div>
+                      <div>
+                        <span className="text-[10px] font-semibold text-suave flex items-center gap-1.5 uppercase">
+                          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                          Diesel
+                        </span>
+                        <p className="numeros text-lg font-bold text-claro tracking-tight mt-1 truncate">
+                          {formatLitros(litrosParaMililitros(dados.vendas.litrosDieselMes))}
+                        </p>
                       </div>
                     </div>
-                  ))}
+                  </div>
+
+                  <div className="mt-4 pt-4 border-t border-borda/30 space-y-2">
+                    {/* Espaçador para manter altura e alinhamento simétrico com Card 1 */}
+                    <div className="flex items-center justify-between text-xs h-[18px]">
+                      <span className="text-suave flex items-center gap-1.5 opacity-0">
+                        <span className="h-1.5 w-1.5 rounded-full bg-slate-500" />
+                        &nbsp;
+                      </span>
+                      <span className="numeros font-bold text-claro/80 opacity-0">
+                        &nbsp;
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-suave font-semibold">Volume Total</span>
+                      <span className="numeros font-bold text-claro">
+                        {formatLitros(litrosParaMililitros(dados.vendas.litrosMes))}
+                      </span>
+                    </div>
+                  </div>
                 </div>
               </section>
-            )}
 
-            {/* KPIs (Venda Dia, Venda do Mês com Volume, Capital) */}
-            <section className="grid gap-4 sm:grid-cols-3">
-              <Kpi
-                rotulo="Venda do dia"
-                valor={formatReais(dados.vendas.vendaDia)}
-                icone={ICO.dia('h-5 w-5')}
-                subtitulo={`Média diária: R$ ${mediaDiaria.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-                destaque
-              />
-              <Kpi
-                rotulo="Vendas do mês"
-                valor={formatReais(dados.vendas.vendaMes)}
-                icone={ICO.mes('h-5 w-5')}
-                subtitulo={`Volume: ${formatLitros(litrosParaMililitros(dados.vendas.litrosMes))} • Pico: R$ ${picoFaturamento.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-              />
-              <Kpi
-                rotulo={`Capital ${modoCapitalTotal ? 'total' : 'operacional'}`}
-                valor={formatReais(modoCapitalTotal ? dados.capital.total : dados.capital.operacional)}
-                icone={ICO.capital('h-5 w-5')}
-                subtitulo={modoCapitalTotal ? 'Inclui aportes de sócios' : 'Patrimônio gerado pela operação'}
-              />
-            </section>
-
-            {/* Gráfico de Vendas */}
-            <section className="cartao flex min-h-[300px] flex-col p-6">
-              <div className="mb-4 flex flex-col gap-2">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h2 className="font-display text-lg font-bold text-claro">Faturamento</h2>
-                    <p className="text-[10px] text-suave">Histórico de fechamentos confirmados</p>
+              {/* Gráfico de Vendas */}
+              <section className="cartao flex min-h-[300px] flex-col p-6">
+                <div className="mb-4 flex flex-col gap-2">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h2 className="font-display text-lg font-bold text-claro">Faturamento</h2>
+                      <p className="text-[10px] text-suave">Histórico de fechamentos confirmados</p>
+                    </div>
+                    <select
+                      value={periodoFiltro}
+                      onChange={(e) => setPeriodoFiltro(e.target.value as any)}
+                      className="rounded-lg border border-borda bg-ardosia px-2.5 py-1.5 text-xs font-semibold text-claro focus:outline-none cursor-pointer"
+                    >
+                      <option value="7d">7 dias</option>
+                      <option value="30d">30 dias</option>
+                      <option value="mes">Mês</option>
+                      <option value="90d">90 dias</option>
+                    </select>
                   </div>
-                  <select
-                    value={periodoFiltro}
-                    onChange={(e) => setPeriodoFiltro(e.target.value as any)}
-                    className="rounded-lg border border-borda bg-ardosia px-2.5 py-1.5 text-xs font-semibold text-claro focus:outline-none cursor-pointer"
-                  >
-                    <option value="7d">7 dias</option>
-                    <option value="30d">30 dias</option>
-                    <option value="mes">Mês</option>
-                    <option value="90d">90 dias</option>
-                  </select>
-                </div>
-                <div className="flex items-center justify-between border-t border-borda/30 pt-2.5 mt-1 text-xs">
-                  <div>
-                    <p className="text-[9px] font-bold uppercase tracking-wider text-suave">Total no Filtro</p>
-                    <p className="numeros font-bold text-sm text-claro mt-0.5">
-                      R$ {totalVendasFiltradas.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-[9px] font-bold uppercase tracking-wider text-suave">Média/Período</p>
-                    <p className="numeros font-bold text-sm text-claro mt-0.5">
-                      R$ {mediaDiariaFiltrada.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </p>
+                  <div className="flex items-center justify-between border-t border-borda/30 pt-2.5 mt-1 text-xs">
+                    <div>
+                      <p className="text-[9px] font-bold uppercase tracking-wider text-suave">Total no Filtro</p>
+                      <p className="numeros font-bold text-sm text-claro mt-0.5">
+                        R$ {totalVendasFiltradas.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-[9px] font-bold uppercase tracking-wider text-suave">Média/Período</p>
+                      <p className="numeros font-bold text-sm text-claro mt-0.5">
+                        R$ {mediaDiariaFiltrada.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </p>
+                    </div>
                   </div>
                 </div>
-              </div>
-              <div className="h-[200px] w-full flex-1">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={vendasFiltradas} margin={{ top: 4, right: 4, left: -8, bottom: 0 }}>
-                    <defs>
-                      <linearGradient id="gradBarra" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor={cores.acento} stopOpacity={0.95} />
-                        <stop offset="100%" stopColor={cores.acento} stopOpacity={0.45} />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid stroke={cores.borda} strokeDasharray="3 3" vertical={false} opacity={0.3} />
-                    <XAxis
-                      dataKey="data"
-                      stroke={cores.borda}
-                      tick={{ fill: cores.suave, fontSize: 11 }}
-                      axisLine={false}
-                      tickLine={false}
-                    />
-                    <YAxis
-                      stroke={cores.borda}
-                      tick={{ fill: cores.suave, fontSize: 11 }}
-                      axisLine={false}
-                      tickLine={false}
-                      width={48}
-                      tickFormatter={(val) => `R$${val}`}
-                    />
-                    <Tooltip content={<CustomTooltip />} cursor={{ fill: cores.acento, fillOpacity: 0.04 }} />
-                    <Bar dataKey="valor" fill="url(#gradBarra)" radius={[5, 5, 0, 0]} maxBarSize={46} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </section>
+                <div className="h-[200px] w-full flex-1">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={vendasFiltradas} margin={{ top: 4, right: 4, left: -8, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id="gradBarra" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor={cores.acento} stopOpacity={0.95} />
+                          <stop offset="100%" stopColor={cores.acento} stopOpacity={0.45} />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid stroke={cores.borda} strokeDasharray="3 3" vertical={false} opacity={0.3} />
+                      <XAxis
+                        dataKey="data"
+                        stroke={cores.borda}
+                        tick={{ fill: cores.suave, fontSize: 11 }}
+                        axisLine={false}
+                        tickLine={false}
+                      />
+                      <YAxis
+                        stroke={cores.borda}
+                        tick={{ fill: cores.suave, fontSize: 11 }}
+                        axisLine={false}
+                        tickLine={false}
+                        width={48}
+                        tickFormatter={(val) => `R$${val}`}
+                      />
+                      <Tooltip content={<CustomTooltip />} cursor={{ fill: cores.acento, fillOpacity: 0.04 }} />
+                      <Bar dataKey="valor" fill="url(#gradBarra)" radius={[5, 5, 0, 0]} maxBarSize={46} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </section>
 
-            {/* Gráficos de Capital e Despesas */}
-            <div className="grid gap-6 xl:grid-cols-3 items-start">
               {/* Gráfico de Evolução do Capital */}
-              <section className="cartao flex min-h-[340px] flex-col p-6 xl:col-span-2">
+              <section className="cartao flex min-h-[340px] flex-col p-6">
                 <div className="mb-6 flex flex-wrap items-baseline justify-between gap-2">
                   <div>
                     <h2 className="font-display text-lg font-bold text-claro">Evolução do Capital</h2>
@@ -506,8 +803,41 @@ export function Painel() {
                 </div>
               </section>
 
+              {/* Últimos Fechamentos */}
+              <FechamentosRecentes fechamentos={dados.fechamentosRecentes} />
+            </>
+          )}
+        </div>
+
+        {/* Coluna Direita Operacional (Sempre no canto superior direito em telas grandes) */}
+        <div className="flex flex-col gap-6 lg:col-span-1">
+          {dados && (
+            <>
+              {/* Tanques */}
+              <section className="cartao flex flex-col p-6">
+                <div className="mb-5">
+                  <h2 className="font-display text-lg font-bold text-claro">Tanques de Combustível</h2>
+                  <p className="text-xs text-suave">Nível físico na última medição de régua</p>
+                </div>
+                <div className="flex flex-1 items-center justify-around gap-4 flex-wrap py-2">
+                  {dados.tanques.map((t) => (
+                    <MedidorTanque
+                      key={t.id}
+                      nome={t.nome}
+                      combustivel={t.combustivel}
+                      nivel={t.nivel}
+                      capacidade={t.capacidade}
+                      nivelAlerta={t.nivelAlerta}
+                    />
+                  ))}
+                </div>
+              </section>
+
+              {/* Painel de Contas */}
+              <PainelContas saldos={dados.saldosContas} />
+
               {/* Gráfico de Despesas (Pizza) */}
-              <section className="cartao flex flex-col p-6 h-full min-h-[340px] xl:col-span-1">
+              <section className="cartao flex flex-col p-6 min-h-[340px]">
                 <div className="mb-4">
                   <h2 className="font-display text-lg font-bold text-claro">Gastos por Categoria</h2>
                   <p className="text-xs text-suave">Distribuição de despesas e vales no mês</p>
@@ -533,8 +863,8 @@ export function Painel() {
                           innerRadius={45}
                           paddingAngle={3}
                         >
-                          {dados.despesasCategoria.map((entry, index) => (
-                            <Cell key={`cell-${index}`} fill={PALETA_CORES[index % PALETA_CORES.length]} />
+                          {dados.despesasCategoria.map((_, index) => (
+                            <Cell key={`cell-${index}`} fill={PALETA_CORES[index % PALETA_CORES.length] || '#64748b'} />
                           ))}
                         </Pie>
                         <Tooltip content={<CustomTooltipDespesas />} />
@@ -550,14 +880,11 @@ export function Painel() {
                   </div>
                 )}
               </section>
-            </div>
-
-            {/* Últimos Fechamentos */}
-            <FechamentosRecentes fechamentos={dados.fechamentosRecentes} />
-          </>
-        )}
-      </div>
-    </main>
+            </>
+          )}
+        </div>
+      </main>
+    </div>
   );
 }
 
@@ -617,16 +944,6 @@ function CustomTooltipDespesas({ active, payload }: any) {
     );
   }
   return null;
-}
-
-// Mini cartões de resumo financeiro do fechamento pendente
-function MiniResumo({ Item, Valor, cor, destaque = false }: { Item: string; Valor: string; cor?: string; destaque?: boolean }) {
-  return (
-    <div className={`rounded-xl border p-3 flex flex-col justify-between ${destaque ? 'border-ambar/30 bg-ambar/5 shadow-sm' : 'border-borda/60 bg-ardosia/20'}`}>
-      <p className="text-[10px] font-bold uppercase tracking-wider text-suave">{Item}</p>
-      <p className={`numeros text-base font-extrabold mt-2 ${cor ?? (destaque ? 'text-ambar' : 'text-claro')}`}>{Valor}</p>
-    </div>
-  );
 }
 
 // Painel de saldos de contas
@@ -731,42 +1048,4 @@ function FechamentosRecentes({ fechamentos }: { fechamentos: FechamentoResumo[] 
   );
 }
 
-function Kpi({
-  rotulo,
-  valor,
-  icone,
-  subtitulo,
-  destaque = false,
-}: {
-  rotulo: string;
-  valor: string;
-  icone: ReactNode;
-  subtitulo?: string;
-  destaque?: boolean;
-}) {
-  return (
-    <div
-      className={`cartao relative overflow-hidden p-5 transition-all duration-300 hover:-translate-y-1 hover:shadow-md ${
-        destaque
-          ? 'ring-1 ring-ambar/20 bg-gradient-to-br from-ardosia to-[color-mix(in_srgb,var(--color-ambar)_4%,transparent)]'
-          : 'hover:border-[color-mix(in_srgb,var(--color-ambar)_20%,transparent)]'
-      }`}
-    >
-      {destaque && <span className="absolute inset-x-0 top-0 h-0.5 bg-ambar/80" />}
-      <div className="flex items-start justify-between gap-3">
-        <p className="text-[10px] font-bold uppercase tracking-wider text-suave">{rotulo}</p>
-        <span className={`flex h-8 w-8 items-center justify-center rounded-lg ${destaque ? 'bg-ambar/10 text-ambar shadow-sm shadow-ambar/5' : 'bg-[color-mix(in_srgb,var(--color-claro)_4%,transparent)] text-suave/80'}`}>
-          {icone}
-        </span>
-      </div>
-      <p className={`numeros mt-3 text-2xl font-bold tracking-tight ${destaque ? 'text-ambar font-black' : 'text-claro'}`}>
-        {valor}
-      </p>
-      {subtitulo && (
-        <p className="mt-2 text-xs text-suave/90 font-medium">
-          {subtitulo}
-        </p>
-      )}
-    </div>
-  );
-}
+
