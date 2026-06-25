@@ -62,24 +62,27 @@ export function Configuracoes({ tema, aoTrocarTema }: Props) {
   const [taxaDebitoFixa, setTaxaDebitoFixa] = useState('');
   const [taxaCreditoPct, setTaxaCreditoPct] = useState('');
   const [taxaCreditoFixa, setTaxaCreditoFixa] = useState('');
+  const [mostrarAvulsos, setMostrarAvulsos] = useState(false);
   const [carregando, setCarregando] = useState(true);
   const [salvando, setSalvando] = useState(false);
 
   useEffect(() => {
     async function carregar() {
       try {
-        const [troco, debPct, debFixa, credPct, credFixa] = await Promise.all([
+        const [troco, debPct, debFixa, credPct, credFixa, avulsos] = await Promise.all([
           lerConfig('troco_fixo_centavos'),
           lerConfig('taxa_cartao_debito_pct'),
           lerConfig('taxa_cartao_debito_fixa_centavos'),
           lerConfig('taxa_cartao_credito_pct'),
           lerConfig('taxa_cartao_credito_fixa_centavos'),
+          lerConfig('fechamento_mostrar_avulsos'),
         ]);
         if (troco !== null) setTrocoFixo(String(Number(troco) / 100));
         if (debPct !== null) setTaxaDebitoPct(String(debPct));
         if (debFixa !== null) setTaxaDebitoFixa(String(Number(debFixa) / 100));
         if (credPct !== null) setTaxaCreditoPct(String(credPct));
         if (credFixa !== null) setTaxaCreditoFixa(String(Number(credFixa) / 100));
+        if (avulsos !== null) setMostrarAvulsos(Boolean(avulsos));
       } catch (err) {
         console.error('Erro ao carregar configs', err);
         toast.erro('Falha ao carregar configurações.');
@@ -101,6 +104,7 @@ export function Configuracoes({ tema, aoTrocarTema }: Props) {
         salvarConfig('taxa_cartao_debito_fixa_centavos', Math.round(Number(taxaDebitoFixa || 0) * 100)),
         salvarConfig('taxa_cartao_credito_pct', Number(taxaCreditoPct || 0)),
         salvarConfig('taxa_cartao_credito_fixa_centavos', Math.round(Number(taxaCreditoFixa || 0) * 100)),
+        salvarConfig('fechamento_mostrar_avulsos', mostrarAvulsos),
       ]);
       toast.sucesso('Configurações salvas com sucesso.');
     } catch (err) {
@@ -144,6 +148,20 @@ export function Configuracoes({ tema, aoTrocarTema }: Props) {
                 onChange={(e) => setTrocoFixo(e.target.value)}
               />
             </Campo>
+          </div>
+          <div className="mt-4 border-t border-borda pt-4">
+            <label className="flex items-center gap-2 text-sm font-medium text-claro cursor-pointer">
+              <input
+                type="checkbox"
+                checked={mostrarAvulsos}
+                onChange={(e) => setMostrarAvulsos(e.target.checked)}
+                className="rounded border-borda bg-fundo text-ambar focus:ring-ambar h-4 w-4"
+              />
+              <span>Mostrar produtos avulsos / serviços no fechamento</span>
+            </label>
+            <p className="mt-1 text-xs text-suave pl-6">
+              Se desativado, a seção de vendas avulsas e serviços não será exibida no fechamento de caixa por padrão.
+            </p>
           </div>
         </section>
 

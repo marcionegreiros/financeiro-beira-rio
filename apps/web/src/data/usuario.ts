@@ -10,6 +10,7 @@ import { supabase } from './supabase';
 export interface UsuarioAtual {
   id: string;
   nome: string;
+  email: string;
   cargo: string | null;
   fotoUrl: string | null;
   permissoes: Set<string>;
@@ -27,7 +28,7 @@ export async function carregarUsuarioAtual(): Promise<UsuarioAtual | null> {
   const { data, error } = await supabase
     .from('usuario')
     .select(
-      'id,nome,cargo,foto_url,usuario_permissao(permissao_chave),usuario_conta(conta_id,nivel)',
+      'id,nome,email,cargo,foto_url,usuario_permissao(permissao_chave),usuario_conta(conta_id,nivel)',
     )
     .eq('auth_uid', authUid)
     .single();
@@ -36,6 +37,7 @@ export async function carregarUsuarioAtual(): Promise<UsuarioAtual | null> {
   const linha = data as {
     id: string;
     nome: string;
+    email: string;
     cargo: string | null;
     foto_url: string | null;
     usuario_permissao: { permissao_chave: string }[];
@@ -52,6 +54,7 @@ export async function carregarUsuarioAtual(): Promise<UsuarioAtual | null> {
   return {
     id: linha.id,
     nome: linha.nome,
+    email: linha.email,
     cargo: linha.cargo,
     fotoUrl: linha.foto_url,
     permissoes: new Set(linha.usuario_permissao.map((p) => p.permissao_chave)),

@@ -12,6 +12,9 @@ on conflict (id) do nothing;
 -- Leitura: o bucket é público; a foto é servida por URL direta (getPublicUrl),
 -- sem necessidade de policy de SELECT em storage.objects (e sem permitir listar
 -- o bucket inteiro).
+create policy "avatares ler proprio ou gerente"
+  on storage.objects for select to authenticated
+  using (bucket_id = 'avatares');
 
 -- Inserir/atualizar/remover: dono da pasta OU gerente de permissões.
 create policy "avatares escrever proprio ou gerente"

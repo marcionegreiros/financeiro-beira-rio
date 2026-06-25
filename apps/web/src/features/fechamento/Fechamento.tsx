@@ -20,6 +20,7 @@ import {
   asQuantidade,
   type ContextoFechamento,
   type ResumoConfirmacao,
+  salvarRascunhoFechamento,
 } from '../../data/fechamento';
 import { Relatorio, type RelatorioDados } from './Relatorio';
 import { useOnlineStatus } from '../../hooks/useOnlineStatus';
@@ -53,6 +54,11 @@ function centavosParaString(valor: number | bigint): string {
   return `${negativo ? '-' : ''}${inteirosStr},${centavosStr}`;
 }
 const inputClasse = 'w-28 rounded-lg px-3 py-2 text-right numeros';
+
+function formatarLeituraAnterior(valor: Mililitros): string {
+  const litros = valor / 1000n;
+  return Number(litros).toLocaleString('pt-BR');
+}
 
 interface Props {
   usuarioId: string | null;
@@ -103,6 +109,64 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
   const [confirmando, setConfirmando] = useState(false);
   const [erroConfirmar, setErroConfirmar] = useState<string | null>(null);
   const [relatorio, setRelatorio] = useState<RelatorioDados | null>(null);
+  const [salvandoRascunho, setSalvandoRascunho] = useState(false);
+
+  // Manual save draft helper
+  const salvarRascunho = async (mostrarToast = false) => {
+    if (!ctx || ctx.status === 'travado') return;
+    try {
+      setSalvandoRascunho(true);
+      const rascunhoData = {
+        leituras,
+        contagens,
+        vendasIndividuais,
+        pix,
+        debito,
+        credito,
+        fiadosConcedidos,
+        fiadosRecebidos,
+        contado,
+        observacao,
+      };
+      await salvarRascunhoFechamento(ctx.data, rascunhoData, usuarioId || '');
+      if (mostrarToast) {
+        toast.sucesso('Rascunho de fechamento salvo.');
+      }
+    } catch (err) {
+      console.error(err);
+      if (mostrarToast) {
+        toast.erro('Falha ao salvar rascunho.');
+      }
+    } finally {
+      setSalvandoRascunho(false);
+    }
+  };
+
+  const rascunhoDataRef = useRef({
+    leituras, contagens, vendasIndividuais, pix, debito, credito,
+    fiadosConcedidos, fiadosRecebidos, contado, observacao
+  });
+
+  // Keep ref updated to avoid re-triggering the debounced function
+  useEffect(() => {
+    rascunhoDataRef.current = {
+      leituras, contagens, vendasIndividuais, pix, debito, credito,
+      fiadosConcedidos, fiadosRecebidos, contado, observacao
+    };
+  }, [leituras, contagens, vendasIndividuais, pix, debito, credito, fiadosConcedidos, fiadosRecebidos, contado, observacao]);
+
+  // Debounced auto-save
+  useEffect(() => {
+    if (!ctx || ctx.status === 'travado') return;
+
+    const timer = setTimeout(() => {
+      const data = rascunhoDataRef.current;
+      salvarRascunhoFechamento(ctx.data, data, usuarioId || '')
+        .catch((err) => console.error('Erro no auto-save do rascunho:', err));
+    }, 1500);
+
+    return () => clearTimeout(timer);
+  }, [ctx?.data, ctx?.status, leituras, contagens, vendasIndividuais, pix, debito, credito, fiadosConcedidos, fiadosRecebidos, contado, observacao, usuarioId]);
 
   const refs = useRef<(HTMLInputElement | null)[]>([]);
 
@@ -301,8 +365,8 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
 
     const produtos = ctx.produtos.map((p) => {
       const preenchido = (contagens[p.id] ?? '').trim() !== '';
-      const atual = paraQuantidade(contagens[p.id] ?? '');
       const ent = paraQuantidade(entradasEstoque[p.id] ?? '');
+      const atual = preenchido ? paraQuantidade(contagens[p.id] ?? '') : asQuantidade(p.estoqueAnterior + ent);
       const r = vendaProdutoContagem({
         estoqueAnterior: p.estoqueAnterior,
         entradas: ent,
@@ -405,7 +469,6 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
           .filter((b) => (leituras[b.id] ?? '').trim() !== '' && !b.invalido)
           .map((b) => ({ bombaId: b.id, leitura: b.atual })),
         contagens: calc.produtos
-          .filter((p) => p.preenchido)
           .map((p) => ({ produtoId: p.id, quantidade: p.atual })),
         entradas: calc.produtos
           .filter((p) => p.ent > 0n)
@@ -645,7 +708,7 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
                 <tr key={b.id} className="border-t border-borda">
                   <td className="py-2 text-claro">{b.combustivel}</td>
                   <td className="numeros py-2 text-right text-claro/60">
-                    {formatLitros(b.leituraAnterior)}
+                    {formatarLeituraAnterior(b.leituraAnterior)}
                   </td>
                   <td className="py-2 text-right">
                     <input
@@ -656,6 +719,11 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
                       value={leituras[b.id] ?? ''}
                       onChange={(e) => setLeituras((s) => ({ ...s, [b.id]: e.target.value }))}
                       onKeyDown={(e) => aoEnter(e, meu)}
+                      onFocus={(e) => {
+                        if (e.target.value === '0') {
+                          setLeituras((s) => ({ ...s, [b.id]: '' }));
+                        }
+                      }}
                       className={`${inputClasse} ${b.invalido ? 'border-negativo' : ''}`}
                       placeholder="0"
                     />
@@ -679,7 +747,6 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-suave">
               <th className="pb-2 font-medium">Produto</th>
               <th className="pb-2 text-right font-medium">Estoque anterior</th>
-              <th className="pb-2 text-right font-medium">Entradas</th>
               <th className="pb-2 text-right font-medium">Contagem agora</th>
               <th className="pb-2 text-right font-medium">Vendido</th>
               <th className="pb-2 text-right font-medium">Valor</th>
@@ -696,15 +763,6 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
                   </td>
                   <td className="py-2 text-right">
                     <input
-                      inputMode="numeric"
-                      value={entradasEstoque[p.id] ?? ''}
-                      onChange={(e) => setEntradasEstoque((s) => ({ ...s, [p.id]: e.target.value }))}
-                      className={inputClasse + ' !w-20'}
-                      placeholder="0"
-                    />
-                  </td>
-                  <td className="py-2 text-right">
-                    <input
                       ref={(el) => {
                         refs.current[meu] = el;
                       }}
@@ -712,6 +770,11 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
                       value={contagens[p.id] ?? ''}
                       onChange={(e) => setContagens((s) => ({ ...s, [p.id]: e.target.value }))}
                       onKeyDown={(e) => aoEnter(e, meu)}
+                      onFocus={(e) => {
+                        if (e.target.value === '0') {
+                          setContagens((s) => ({ ...s, [p.id]: '' }));
+                        }
+                      }}
                       className={inputClasse}
                       placeholder="0"
                     />
@@ -726,7 +789,7 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
       </section>
 
       {/* Produtos individuais (Venda Avulsa) */}
-      {calc.ind.length > 0 && (
+      {ctx.mostrarProdutosAvulsos && calc.ind.length > 0 && (
         <section className="cartao p-5">
           <h2 className="mb-3 font-display font-semibold text-claro">Produtos (Avulsos / Serviços)</h2>
           <table className="w-full text-sm">
@@ -752,6 +815,11 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
                         value={vendasIndividuais[p.id] ?? ''}
                         onChange={(e) => setVendasIndividuais((s) => ({ ...s, [p.id]: e.target.value }))}
                         onKeyDown={(e) => aoEnter(e, meu)}
+                        onFocus={(e) => {
+                          if (e.target.value === '0') {
+                            setVendasIndividuais((s) => ({ ...s, [p.id]: '' }));
+                          }
+                        }}
                         className={inputClasse}
                         placeholder="0"
                       />
@@ -771,9 +839,101 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
         <span className="numeros text-2xl font-bold text-claro">{formatReais(calc.vendaFisica)}</span>
       </section>
 
-      {/* Fiados do Dia */}
+      {/* Pagamentos */}
+      <section className="grid gap-4 cartao p-5 sm:grid-cols-3">
+        <h2 className="font-display font-semibold text-claro sm:col-span-3">
+          Pagamentos não-dinheiro
+        </h2>
+        <CampoMoeda rotulo="PIX" valor={pix} aoMudar={setPix} />
+        <CampoMoeda
+          rotulo={`Cartão débito (taxa ${formatReais(calc.dCartaoDeb.taxa)})`}
+          valor={debito}
+          aoMudar={setDebito}
+        />
+        <CampoMoeda
+          rotulo={`Cartão crédito (taxa ${formatReais(calc.dCartaoCred.taxa)})`}
+          valor={credito}
+          aoMudar={setCredito}
+        />
+      </section>
+
+      {/* Despesas do dia (vinculadas à janela Despesas) */}
+      <section className="cartao p-5">
+        <div className="mb-3 flex items-center justify-between">
+          <div>
+            <h2 className="font-display font-semibold text-claro">Despesas do dia</h2>
+            <p className="text-xs text-suave">
+              Lançadas aqui ou na janela Despesas. Só as em dinheiro saem da gaveta.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setModalDespesa(true)}
+            className="btn btn-suave px-3 py-2 text-sm"
+          >
+            + Nova despesa
+          </button>
+        </div>
+
+        {despesasDoDia.length === 0 ? (
+          <p className="rounded-lg border border-dashed border-borda px-4 py-6 text-center text-sm text-suave">
+            Nenhuma despesa lançada neste dia.
+          </p>
+        ) : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-suave">
+                <th className="pb-2 font-medium">Descrição</th>
+                <th className="pb-2 font-medium">Categoria</th>
+                <th className="pb-2 font-medium">Forma</th>
+                <th className="pb-2 text-right font-medium">Valor</th>
+                <th className="pb-2"><span className="sr-only">Ações</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {despesasDoDia.map((d) => {
+                const ehDinheiro = d.formaPagamento === 'dinheiro';
+                return (
+                  <tr key={d.id} className="border-t border-borda">
+                    <td className="py-2 text-claro">{d.descricao || '—'}</td>
+                    <td className="py-2 text-suave">{d.categoriaNome ?? '—'}</td>
+                    <td className="py-2 text-suave">
+                      {FORMAS_PAGAMENTO[d.formaPagamento ?? ''] ?? d.formaPagamento ?? '—'}
+                      {!ehDinheiro && <span className="ml-1 text-xs text-suave/70">(não sai da gaveta)</span>}
+                    </td>
+                    <td className={`numeros py-2 text-right ${ehDinheiro ? 'text-negativo' : 'text-suave'}`}>
+                      {formatReais(d.valor)}
+                    </td>
+                    <td className="py-2 text-right">
+                      <button
+                        type="button"
+                        aria-label="Remover despesa"
+                        onClick={() => void excluirDespesa(d.id)}
+                        className="text-suave hover:text-negativo"
+                      >
+                        ✕
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+              <tr className="border-t border-borda">
+                <td className="py-2 font-semibold text-claro" colSpan={3}>
+                  Total em dinheiro (sai da gaveta)
+                </td>
+                <td className="numeros py-2 text-right font-semibold text-negativo">
+                  {formatReais(calc.despesaC)}
+                </td>
+                <td />
+              </tr>
+            </tbody>
+          </table>
+        )}
+      </section>
+
+      {/* Fiados do Dia - Relocalizado abaixo de despesas e reduzido */}
       {!mostrarFiados ? (
-        <div className="flex justify-center my-2">
+        <div className="flex justify-end my-1">
           <button
             type="button"
             onClick={() => {
@@ -785,9 +945,9 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
                 setFiadosRecebidos([{ clienteId: '', valor: '', fiadoId: null }]);
               }
             }}
-            className="btn btn-suave px-4 py-2 text-sm flex items-center gap-2 border border-dashed border-borda hover:border-suave/50 transition-colors duration-200"
+            className="text-xs text-suave hover:text-ambar flex items-center gap-1 border border-borda/40 rounded-lg px-3 py-1.5 hover:border-suave/50 transition-colors bg-card/10"
           >
-            <IconePlus /> Registrar Fiados do Dia (Venda Pendurada / Recebimento)
+            <IconePlus /> Registrar fiado
           </button>
         </div>
       ) : (
@@ -959,115 +1119,45 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
         </section>
       )}
 
-      {/* Pagamentos */}
-      <section className="grid gap-4 cartao p-5 sm:grid-cols-3">
-        <h2 className="font-display font-semibold text-claro sm:col-span-3">
-          Pagamentos não-dinheiro
-        </h2>
-        <CampoMoeda rotulo="PIX" valor={pix} aoMudar={setPix} />
-        <CampoMoeda
-          rotulo={`Cartão débito (taxa ${formatReais(calc.dCartaoDeb.taxa)})`}
-          valor={debito}
-          aoMudar={setDebito}
-        />
-        <CampoMoeda
-          rotulo={`Cartão crédito (taxa ${formatReais(calc.dCartaoCred.taxa)})`}
-          valor={credito}
-          aoMudar={setCredito}
-        />
-      </section>
+      {/* Contagem do dinheiro + diferença + a depositar (reorganizado) */}
+      <section className="grid gap-6 cartao p-5 sm:grid-cols-3">
+        {/* Dinheiro contado (mais evidente/maior) */}
+        <div className="rounded-xl border border-borda bg-claro/5 p-4 flex flex-col justify-center">
+          <label className="flex flex-col gap-1.5 text-sm font-semibold text-claro">
+            Dinheiro contado na gaveta
+            <input
+              inputMode="decimal"
+              aria-label="Dinheiro contado na gaveta"
+              value={contado}
+              onChange={(e) => setContado(e.target.value)}
+              placeholder="0,00"
+              onFocus={(e) => {
+                if (e.target.value === '0' || e.target.value === '0,00') setContado('');
+              }}
+              className={`${CLASSE_CAMPO} numeros text-right text-2xl font-bold py-3 bg-fundo border-borda focus:border-ambar`}
+            />
+          </label>
+        </div>
 
-      {/* Despesas do dia (vinculadas à janela Despesas) */}
-      <section className="cartao p-5">
-        <div className="mb-3 flex items-center justify-between">
+        {/* Diferença (menos evidente) */}
+        <div className="rounded-xl border border-borda/40 p-4 flex flex-col justify-between">
           <div>
-            <h2 className="font-display font-semibold text-claro">Despesas do dia</h2>
-            <p className="text-xs text-suave">
-              Lançadas aqui ou na janela Despesas. Só as em dinheiro saem da gaveta.
+            <p className="text-xs font-medium uppercase tracking-wide text-suave">Diferença</p>
+            <p
+              className={`numeros mt-1 text-xl font-bold ${
+                calc.diferenca < 0n ? 'text-negativo' : 'text-positivo'
+              }`}
+            >
+              {formatReais(calc.diferenca)}
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => setModalDespesa(true)}
-            className="btn btn-suave px-3 py-2 text-sm"
-          >
-            + Nova despesa
-          </button>
+          <p className="text-[11px] text-suave">esperado: {formatReais(calc.esperado)}</p>
         </div>
 
-        {despesasDoDia.length === 0 ? (
-          <p className="rounded-lg border border-dashed border-borda px-4 py-6 text-center text-sm text-suave">
-            Nenhuma despesa lançada neste dia.
-          </p>
-        ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-suave">
-                <th className="pb-2 font-medium">Descrição</th>
-                <th className="pb-2 font-medium">Categoria</th>
-                <th className="pb-2 font-medium">Forma</th>
-                <th className="pb-2 text-right font-medium">Valor</th>
-                <th className="pb-2"><span className="sr-only">Ações</span></th>
-              </tr>
-            </thead>
-            <tbody>
-              {despesasDoDia.map((d) => {
-                const ehDinheiro = d.formaPagamento === 'dinheiro';
-                return (
-                  <tr key={d.id} className="border-t border-borda">
-                    <td className="py-2 text-claro">{d.descricao || '—'}</td>
-                    <td className="py-2 text-suave">{d.categoriaNome ?? '—'}</td>
-                    <td className="py-2 text-suave">
-                      {FORMAS_PAGAMENTO[d.formaPagamento ?? ''] ?? d.formaPagamento ?? '—'}
-                      {!ehDinheiro && <span className="ml-1 text-xs text-suave/70">(não sai da gaveta)</span>}
-                    </td>
-                    <td className={`numeros py-2 text-right ${ehDinheiro ? 'text-negativo' : 'text-suave'}`}>
-                      {formatReais(d.valor)}
-                    </td>
-                    <td className="py-2 text-right">
-                      <button
-                        type="button"
-                        aria-label="Remover despesa"
-                        onClick={() => void excluirDespesa(d.id)}
-                        className="text-suave hover:text-negativo"
-                      >
-                        ✕
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-              <tr className="border-t border-borda">
-                <td className="py-2 font-semibold text-claro" colSpan={3}>
-                  Total em dinheiro (sai da gaveta)
-                </td>
-                <td className="numeros py-2 text-right font-semibold text-negativo">
-                  {formatReais(calc.despesaC)}
-                </td>
-                <td />
-              </tr>
-            </tbody>
-          </table>
-        )}
-      </section>
-
-      {/* Contagem do dinheiro + a depositar + diferença */}
-      <section className="grid gap-4 cartao p-5 sm:grid-cols-3">
-        <CampoMoeda rotulo="Dinheiro contado na gaveta" valor={contado} aoMudar={setContado} />
-        <div className="rounded-xl border border-ambar/40 bg-ambar/10 p-4">
-          <p className="text-xs font-medium uppercase tracking-wide text-ambar">A depositar</p>
-          <p className="numeros mt-1 text-2xl font-bold text-ambar">{formatReais(calc.aDepositar)}</p>
-        </div>
-        <div className="rounded-xl border border-borda p-4">
-          <p className="text-xs font-medium uppercase tracking-wide text-suave">Diferença</p>
-          <p
-            className={`numeros mt-1 text-2xl font-bold ${
-              calc.diferenca < 0n ? 'text-negativo' : 'text-positivo'
-            }`}
-          >
-            {formatReais(calc.diferenca)}
-          </p>
-          <p className="mt-1 text-xs text-suave">esperado {formatReais(calc.esperado)}</p>
+        {/* A depositar (em destaque na direita) */}
+        <div className="rounded-xl border border-ambar/50 bg-ambar/[0.06] p-4 flex flex-col justify-center shadow-sm shadow-ambar/5">
+          <p className="text-xs font-semibold uppercase tracking-wide text-ambar">A depositar</p>
+          <p className="numeros mt-1 text-3xl font-extrabold text-ambar">{formatReais(calc.aDepositar)}</p>
         </div>
       </section>
 
@@ -1083,17 +1173,28 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
 
       {erroConfirmar && <p className="text-sm text-negativo">{erroConfirmar}</p>}
       {contado.trim() === '' && (
-        <p className="text-sm text-suave">Conte o dinheiro da gaveta para confirmar.</p>
+        <p className="text-sm text-suave">Conte o dinheiro da gaveta para finalizar.</p>
       )}
 
-      <button
-        type="button"
-        onClick={() => void confirmar()}
-        disabled={!podeConfirmar}
-        className="btn btn-primario px-6 py-3 text-base"
-      >
-        {confirmando ? 'Confirmando…' : 'Confirmar fechamento'}
-      </button>
+      <div className="flex justify-end gap-3 mt-4">
+        <button
+          type="button"
+          disabled={confirmando || salvandoRascunho}
+          onClick={() => void salvarRascunho(true)}
+          className="btn btn-suave px-6 py-3 text-base flex items-center gap-2"
+        >
+          {salvandoRascunho ? 'Salvando…' : 'Salvar'}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => void confirmar()}
+          disabled={!podeConfirmar || confirmando || salvandoRascunho}
+          className="btn btn-primario px-8 py-3 text-base font-bold shadow-md shadow-ambar/10"
+        >
+          {confirmando ? 'Finalizando…' : 'Finalizar'}
+        </button>
+      </div>
 
       <NovaDespesaModal
         aberto={modalDespesa}
@@ -1184,6 +1285,11 @@ function CampoMoeda({
         value={valor}
         onChange={(e) => aoMudar(e.target.value)}
         placeholder="0,00"
+        onFocus={(e) => {
+          if (e.target.value === '0' || e.target.value === '0,00') {
+            aoMudar('');
+          }
+        }}
         className={`${CLASSE_CAMPO} numeros text-right`}
       />
     </label>

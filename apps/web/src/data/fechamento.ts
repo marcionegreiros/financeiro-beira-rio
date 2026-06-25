@@ -68,6 +68,7 @@ export interface ContextoFechamento {
     contado: string;
     observacao: string;
   } | undefined;
+  mostrarProdutosAvulsos: boolean;
 }
 
 interface ConfigCartao {
@@ -99,7 +100,7 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
     { data: anteriorRaw },
     fiadosEmAberto,
   ] = await Promise.all([
-    supabase.from('fechamento').select('id, status').eq('data', data).maybeSingle(),
+    supabase.from('fechamento').select('id, status, rascunho').eq('data', data).maybeSingle(),
     supabase
       .from('bomba')
       .select('id,nome,tanque(combustivel_id,combustivel(nome))')
@@ -126,7 +127,7 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
   ]);
   for (const e of [eB, ePC, eP, ePP, eCfg, eC, eCli]) if (e) throw e;
 
-  const fechExistente = existeHoje as { id: string; status: 'aberto' | 'travado' } | null;
+  const fechExistente = existeHoje as { id: string; status: 'aberto' | 'travado'; rascunho: any } | null;
   const jaExisteHoje = Boolean(fechExistente && fechExistente.status === 'travado');
   const status = fechExistente?.status ?? null;
   const fechamentoId = fechExistente?.id ?? null;
@@ -196,6 +197,7 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
     ]),
   );
   const trocoFixo = paraCentavos(Number(config.get('troco_fixo_centavos') ?? 0));
+  const mostrarProdutosAvulsos = Boolean(config.get('fechamento_mostrar_avulsos') ?? false);
   const taxaDebito = lerTaxa(config.get('taxa_cartao_debito') as ConfigCartao | undefined);
   const taxaCredito = lerTaxa(config.get('taxa_cartao_credito') as ConfigCartao | undefined);
 
@@ -342,7 +344,9 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
     observacao = fechInfo?.observacao ?? '';
   }
 
-  if (fechExistente || fiadosConcedidos.length > 0 || fiadosRecebidos.length > 0) {
+  if (fechExistente?.rascunho) {
+    valoresSalvos = fechExistente.rascunho;
+  } else if (fechExistente || fiadosConcedidos.length > 0 || fiadosRecebidos.length > 0) {
     valoresSalvos = {
       leituras,
       contagens,
@@ -375,6 +379,7 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
     despesasDoDia,
     entradasDoDia,
     valoresSalvos,
+    mostrarProdutosAvulsos,
   };
 }
 
@@ -457,6 +462,30 @@ interface MovimentoInsert {
   criado_por?: string | null;
 }
 
+export async function salvarRascunhoFechamento(
+  data: string,
+  rascunho: any,
+  usuarioId: string
+): Promise<void> {
+  const { data: exist } = await supabase
+    .from('fechamento')
+    .select('id')
+    .eq('data', data)
+    .maybeSingle();
+
+  const fechamentoId = exist?.id ?? uuidv7();
+
+  const { error } = await supabase.from('fechamento').upsert({
+    id: fechamentoId,
+    data,
+    status: 'aberto',
+    responsavel_id: usuarioId || null,
+    rascunho,
+  });
+
+  if (error) throw error;
+}
+
 export async function confirmarFechamento(r: ResumoConfirmacao): Promise<string> {
   const agora = agoraManausISO();
 
@@ -480,6 +509,7 @@ export async function confirmarFechamento(r: ResumoConfirmacao): Promise<string>
         observacao: r.observacao,
         confirmado_em: agora,
         travado_em: agora,
+        rascunho: null,
       })
       .eq('id', fechamentoId);
     if (eFech) throw eFech;
@@ -513,6 +543,7 @@ export async function confirmarFechamento(r: ResumoConfirmacao): Promise<string>
       observacao: r.observacao,
       confirmado_em: agora,
       travado_em: agora,
+      rascunho: null,
     });
     if (eFech) throw eFech;
 

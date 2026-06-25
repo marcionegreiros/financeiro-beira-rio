@@ -34,13 +34,15 @@
   /* Bordas (token utilitário: border-borda) */
   --color-borda: rgba(15, 23, 42, 0.09);
 
-  /* Sidebar — SEMPRE escura (alto contraste tipo "hub", inclusive no claro) */
+  /* Sidebar styles */
   --color-sidebar: #0b1120;
   --color-sidebar-elevado: #131c2e;
   --color-sidebar-borda: rgba(255, 255, 255, 0.08);
   --color-sidebar-texto: #e2e8f0;
   --color-sidebar-suave: #8a99b0;
   --color-sidebar-acento: #3b82f6;
+  --color-sidebar-hover: rgba(255, 255, 255, 0.04);
+  --color-sidebar-ativo: rgba(255, 255, 255, 0.07);
 
   /* Tipografia (§8.2) */
   --font-display: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif;
@@ -67,6 +69,16 @@
   --color-negativo: #dc2626;
   --color-atencao: #d97706;
   --color-borda: rgba(15, 23, 42, 0.09);
+
+  /* Cores da barra lateral no modo claro */
+  --color-sidebar: #ffffff;
+  --color-sidebar-elevado: #f8fafc;
+  --color-sidebar-borda: rgba(15, 23, 42, 0.08);
+  --color-sidebar-texto: #0f172a;
+  --color-sidebar-suave: #64748b;
+  --color-sidebar-acento: #2563eb;
+  --color-sidebar-hover: rgba(15, 23, 42, 0.04);
+  --color-sidebar-ativo: rgba(15, 23, 42, 0.06);
 
   /* anel de foco (rgb do acento, usado em rgba()) */
   --acento-rgb: 37, 99, 235;

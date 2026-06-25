@@ -300,10 +300,10 @@ export function Painel({ usuario }: { usuario: UsuarioAtual }) {
             <>
               {/* Caixa de Fechamento Pendente com Resumo do Último Dia (Banner Compacto) */}
               {!fechamentoHojeFeito && dados.ultimoFechamento && (
-                <section className="animar-surgir rounded-xl border border-atencao/20 bg-atencao/[0.02] p-4 shadow-sm flex flex-col gap-3">
+                <section className="animar-surgir rounded-xl border border-ambar/20 bg-ambar/[0.02] p-4 shadow-sm flex flex-col gap-3">
                   <div className="flex flex-wrap items-center justify-between gap-2 border-b border-borda/30 pb-2">
                     <div className="flex items-center gap-2">
-                      <span className="h-1.5 w-1.5 rounded-full bg-atencao animate-pulse" />
+                      <span className="h-1.5 w-1.5 rounded-full bg-ambar animate-pulse" />
                       <h2 className="text-xs font-bold text-claro uppercase tracking-wider">Fechamento de hoje pendente</h2>
                     </div>
                     <span className="text-[10px] text-suave">

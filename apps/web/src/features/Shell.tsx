@@ -95,6 +95,11 @@ const ICONE_FECHAR = (className: string) => (
     <path strokeLinecap="round" strokeLinejoin="round" d="M6 6l12 12M18 6L6 18" />
   </svg>
 );
+const ICONE_EDITAR = (className: string) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+  </svg>
+);
 
 
 
@@ -103,6 +108,7 @@ export function Shell({ usuario }: { usuario: UsuarioAtual }) {
   const [tela, setTela] = useState<Tela>('painel');
   const [menuAbertoMobile, setMenuAbertoMobile] = useState(false);
   const [perfilAberto, setPerfilAberto] = useState(false);
+  const [menuUsuarioAberto, setMenuUsuarioAberto] = useState(false);
 
   // Foto/nome exibidos: começam do usuário carregado e atualizam ao editar o
   // próprio perfil (sem precisar recarregar a sessão inteira).
@@ -232,22 +238,59 @@ export function Shell({ usuario }: { usuario: UsuarioAtual }) {
         <div className="flex-1 overflow-y-auto px-3 py-6">{navLista}</div>
 
         {/* Rodapé */}
-        <div className="space-y-3 border-t border-sidebar-borda p-3">
+        <div className="relative border-t border-sidebar-borda p-3">
+          {menuUsuarioAberto && (
+            <>
+              <button
+                type="button"
+                onClick={() => setMenuUsuarioAberto(false)}
+                className="fixed inset-0 z-40 cursor-default bg-transparent"
+              />
+              <div className="absolute bottom-[76px] left-3 right-3 z-50 rounded-xl border border-sidebar-borda bg-sidebar-elevado p-3 shadow-xl animar-surgir flex flex-col gap-1">
+                {/* Header: Nome, email e cargo */}
+                <div className="px-2 py-1.5 leading-tight">
+                  <p className="font-bold text-claro text-sm">{nomeExibido}</p>
+                  <p className="text-[11px] text-suave mt-0.5 truncate">{usuario.email || '—'}</p>
+                  <span className="mt-1.5 inline-flex items-center rounded-full bg-sidebar-hover px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-sidebar-suave">
+                    {cargo}
+                  </span>
+                </div>
+                <div className="h-px bg-sidebar-borda my-1.5" />
+                
+                {/* Opções */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPerfilAberto(true);
+                    setMenuUsuarioAberto(false);
+                  }}
+                  className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-xs font-semibold text-sidebar-texto transition-colors hover:bg-sidebar-hover"
+                >
+                  {ICONE_EDITAR('h-4 w-4 text-suave shrink-0')}
+                  Editar meu perfil
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMenuUsuarioAberto(false);
+                    void sair();
+                  }}
+                  className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-xs font-semibold text-negativo transition-colors hover:bg-negativo/15"
+                >
+                  {ICONES.sair('h-4 w-4 shrink-0')}
+                  Sair da conta
+                </button>
+              </div>
+            </>
+          )}
+
           <BadgeUsuario
             nome={nomeExibido}
             foto={fotoExibida}
             cargo={cargo}
             isOnline={isOnline}
-            aoClicar={() => setPerfilAberto(true)}
+            aoClicar={() => setMenuUsuarioAberto((v) => !v)}
           />
-          <button
-            type="button"
-            onClick={() => void sair()}
-            className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium text-sidebar-suave transition-colors hover:bg-negativo/15 hover:text-negativo"
-          >
-            {ICONES.sair('h-[18px] w-[18px] shrink-0')}
-            Sair
-          </button>
         </div>
       </aside>
 
@@ -266,7 +309,7 @@ export function Shell({ usuario }: { usuario: UsuarioAtual }) {
             type="button"
             onClick={() => setMenuAbertoMobile((v) => !v)}
             aria-label={menuAbertoMobile ? 'Fechar menu' : 'Abrir menu'}
-            className="-mr-1 rounded-lg p-2 text-sidebar-texto transition-colors hover:bg-white/5"
+            className="-mr-1 rounded-lg p-2 text-sidebar-texto transition-colors hover:bg-sidebar-hover"
           >
             {menuAbertoMobile ? ICONE_FECHAR('h-6 w-6') : ICONE_MENU('h-6 w-6')}
           </button>
@@ -284,25 +327,61 @@ export function Shell({ usuario }: { usuario: UsuarioAtual }) {
           />
           <div className="animar-lateral absolute inset-y-0 left-0 flex w-[82%] max-w-xs flex-col border-r border-sidebar-borda bg-sidebar text-sidebar-texto shadow-2xl">
             <div className="flex-1 overflow-y-auto px-3 py-6">{navLista}</div>
-            <div className="space-y-3 border-t border-sidebar-borda p-3">
+            <div className="relative border-t border-sidebar-borda p-3">
+              {menuUsuarioAberto && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setMenuUsuarioAberto(false)}
+                    className="fixed inset-0 z-40 cursor-default bg-transparent"
+                  />
+                  <div className="absolute bottom-[76px] left-3 right-3 z-50 rounded-xl border border-sidebar-borda bg-sidebar-elevado p-3 shadow-xl animar-surgir flex flex-col gap-1">
+                    {/* Header: Nome, email e cargo */}
+                    <div className="px-2 py-1.5 leading-tight">
+                      <p className="font-bold text-claro text-sm">{nomeExibido}</p>
+                      <p className="text-[11px] text-suave mt-0.5 truncate">{usuario.email || '—'}</p>
+                      <span className="mt-1.5 inline-flex items-center rounded-full bg-sidebar-hover px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-sidebar-suave">
+                        {cargo}
+                      </span>
+                    </div>
+                    <div className="h-px bg-sidebar-borda my-1.5" />
+                    
+                    {/* Opções */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPerfilAberto(true);
+                        setMenuUsuarioAberto(false);
+                        setMenuAbertoMobile(false);
+                      }}
+                      className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-xs font-semibold text-sidebar-texto transition-colors hover:bg-sidebar-hover"
+                    >
+                      {ICONE_EDITAR('h-4 w-4 text-suave shrink-0')}
+                      Editar meu perfil
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMenuUsuarioAberto(false);
+                        setMenuAbertoMobile(false);
+                        void sair();
+                      }}
+                      className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-xs font-semibold text-negativo transition-colors hover:bg-negativo/15"
+                    >
+                      {ICONES.sair('h-4 w-4 shrink-0')}
+                      Sair da conta
+                    </button>
+                  </div>
+                </>
+              )}
+
               <BadgeUsuario
                 nome={nomeExibido}
                 foto={fotoExibida}
                 cargo={cargo}
                 isOnline={isOnline}
-                aoClicar={() => {
-                  setMenuAbertoMobile(false);
-                  setPerfilAberto(true);
-                }}
+                aoClicar={() => setMenuUsuarioAberto((v) => !v)}
               />
-              <button
-                type="button"
-                onClick={() => void sair()}
-                className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium text-sidebar-suave transition-colors hover:bg-negativo/15 hover:text-negativo"
-              >
-                {ICONES.sair('h-[18px] w-[18px] shrink-0')}
-                Sair
-              </button>
             </div>
           </div>
         </div>
@@ -377,7 +456,7 @@ function BadgeUsuario({
       type="button"
       onClick={aoClicar}
       title="Meu perfil"
-      className="flex w-full items-center gap-3 rounded-xl border border-sidebar-borda bg-sidebar-elevado px-2.5 py-2 text-left transition-colors hover:bg-white/[0.06]"
+      className="flex w-full items-center gap-3 rounded-xl border border-sidebar-borda bg-sidebar-elevado px-2.5 py-2 text-left transition-colors hover:bg-sidebar-hover"
     >
       <div className="relative shrink-0">
         <Avatar nome={nome} fotoUrl={foto} size="md" />
@@ -387,7 +466,7 @@ function BadgeUsuario({
       </div>
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-semibold leading-tight text-sidebar-texto">{nome}</p>
-        <span className="mt-0.5 inline-flex items-center rounded-full bg-white/5 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-sidebar-suave">
+        <span className="mt-0.5 inline-flex items-center rounded-full bg-sidebar-hover px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-sidebar-suave">
           {cargo}
         </span>
       </div>
@@ -414,8 +493,8 @@ function ItemNavSidebar({
       onClick={aoClicar}
       className={`group relative flex w-full items-center gap-3 rounded-lg py-2.5 pl-4 pr-3 text-left text-sm font-medium transition-all duration-200 ${
         ativo
-          ? 'bg-white/[0.07] text-sidebar-texto'
-          : 'text-sidebar-suave hover:bg-white/[0.04] hover:text-sidebar-texto'
+          ? 'bg-sidebar-ativo text-sidebar-texto'
+          : 'text-sidebar-suave hover:bg-sidebar-hover hover:text-sidebar-texto'
       }`}
     >
       {/* Barra indicadora de seleção */}

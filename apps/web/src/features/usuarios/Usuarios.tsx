@@ -42,6 +42,8 @@ export function Usuarios({ usuario }: { usuario: UsuarioAtual }) {
   const [nome, setNome] = useState('');
   const [email, setEmail] = useState('');
   const [senha, setSenha] = useState('');
+  const [senhaModificada, setSenhaModificada] = useState(false);
+  const [mostrarCampoSenha, setMostrarCampoSenha] = useState(false);
   const [cargo, setCargo] = useState('');
   const [perms, setPerms] = useState<Set<string>>(new Set());
   const [contasSel, setContasSel] = useState<Map<string, NivelConta>>(new Map());
@@ -86,6 +88,8 @@ export function Usuarios({ usuario }: { usuario: UsuarioAtual }) {
     setNome('');
     setEmail('');
     setSenha('');
+    setSenhaModificada(false);
+    setMostrarCampoSenha(false);
     setCargo('');
     setPerms(new Set());
     setContasSel(new Map());
@@ -99,6 +103,8 @@ export function Usuarios({ usuario }: { usuario: UsuarioAtual }) {
     setNome(u.nome);
     setEmail(u.email);
     setSenha('');
+    setSenhaModificada(false);
+    setMostrarCampoSenha(false);
     setCargo(u.cargo ?? '');
     setPerms(new Set(u.permissoes));
     setContasSel(new Map(Array.from(u.contas.entries()) as [string, NivelConta][]));
@@ -123,7 +129,7 @@ export function Usuarios({ usuario }: { usuario: UsuarioAtual }) {
     const temAcessoGlobalContas =
       modelo.permissoes.has('transferir_entre_contas') || modelo.permissoes.has('gerenciar_contas');
     if (temAcessoGlobalContas) {
-      setContasSel(new Map());
+      setContasSel(new Map(contas.map((c) => [c.id, 'movimentar'])));
       return;
     }
     const dinheiro = contas.filter((c) => c.tipo === 'dinheiro');
@@ -188,13 +194,13 @@ export function Usuarios({ usuario }: { usuario: UsuarioAtual }) {
         toast.sucesso('Usuário criado.');
       } else if (editando) {
         await atualizarPerfil(editando.id, { nome: nome.trim(), cargo: cargo || null });
-        // Ninguém altera as PRÓPRIAS permissões/contas por aqui (evita o gerente
+        // Ninguém altera as PRÓPRIAS permissões por aqui (evita o gerente
         // se rebaixar/trancar sem querer). Só mexe nas dos OUTROS.
         if (editando.id !== usuario.id) {
           await salvarPermissoes(editando.id, Array.from(perms));
-          await salvarContasAcesso(editando.id, contasParaSalvar());
         }
-        if (senha.length >= 6) await redefinirSenha(editando.id, senha);
+        await salvarContasAcesso(editando.id, contasParaSalvar());
+        if (senhaModificada && senha.length >= 6) await redefinirSenha(editando.id, senha);
         if (fotoFile) await uploadFoto(editando.id, fotoFile);
         toast.sucesso('Usuário atualizado.');
       }
@@ -312,125 +318,162 @@ export function Usuarios({ usuario }: { usuario: UsuarioAtual }) {
         larguraMax="max-w-2xl"
       >
         <form onSubmit={aoSalvar} className="flex flex-col gap-5">
-          {/* Identidade + foto */}
-          <div className="flex items-center gap-4">
-            <Avatar nome={nome || '?'} fotoUrl={fotoPreview} size="lg" />
-            <div>
-              <label className="btn btn-suave cursor-pointer px-3 py-1.5 text-xs">
-                Trocar foto
-                <input type="file" accept="image/*" className="hidden" onChange={escolherFoto} />
-              </label>
-              <p className="mt-1 text-xs text-suave">JPG ou PNG, quadrada de preferência.</p>
+          {/* Corpo com rolagem para telas menores */}
+          <div className="max-h-[60vh] overflow-y-auto pr-2 flex flex-col gap-5">
+            {/* Identidade + foto */}
+            <div className="flex items-center gap-4">
+              <Avatar nome={nome || '?'} fotoUrl={fotoPreview} size="lg" />
+              <div>
+                <label className="btn btn-suave cursor-pointer px-3 py-1.5 text-xs">
+                  Trocar foto
+                  <input type="file" accept="image/*" className="hidden" onChange={escolherFoto} />
+                </label>
+                <p className="mt-1 text-xs text-suave">JPG ou PNG, quadrada de preferência.</p>
+              </div>
             </div>
-          </div>
 
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <Campo label="Nome" obrigatorio>
-              <input aria-label="Nome" className={CLASSE_CAMPO} value={nome} onChange={(e) => setNome(e.target.value)} />
-            </Campo>
-            <Campo label="Cargo">
-              <select aria-label="Cargo" className={CLASSE_CAMPO} value={cargo} onChange={(e) => aplicarModelo(e.target.value)}>
-                <option value="">Personalizado</option>
-                {modelos.map((m) => (
-                  <option key={m.id} value={m.nome}>
-                    {m.nome}
-                  </option>
-                ))}
-              </select>
-            </Campo>
-          </div>
-
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <Campo label="E-mail" obrigatorio={ehNovo}>
-              <input
-                type="email"
-                aria-label="E-mail"
-                className={CLASSE_CAMPO}
-                value={email}
-                disabled={!ehNovo}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="voce@pontao.com.br"
-              />
-            </Campo>
-            <Campo label={ehNovo ? 'Senha inicial' : 'Nova senha (opcional)'} obrigatorio={ehNovo}>
-              <input
-                type="password"
-                aria-label="Senha"
-                className={CLASSE_CAMPO}
-                value={senha}
-                onChange={(e) => setSenha(e.target.value)}
-                placeholder="mínimo 6 caracteres"
-                autoComplete="new-password"
-              />
-            </Campo>
-          </div>
-
-          {/* Permissões */}
-          <fieldset disabled={editandoSelf}>
-            <legend className="mb-2 text-sm font-semibold text-claro">Permissões</legend>
-            {editandoSelf && (
-              <p className="mb-2 rounded-lg border border-borda bg-claro/[0.03] px-3 py-2 text-xs text-suave">
-                Você não pode alterar as próprias permissões. Outro gerente faz isso, se necessário.
-              </p>
-            )}
-            <div className={`grid max-h-64 grid-cols-1 gap-1.5 overflow-y-auto rounded-lg border border-borda p-3 sm:grid-cols-2 ${editandoSelf ? 'opacity-60' : ''}`}>
-              {catalogo.map((p) => {
-                // Trava de segurança: o gerente não pode remover a PRÓPRIA
-                // permissão de gestão (evita se trancar para fora).
-                const travado =
-                  !ehNovo && editando?.id === usuario.id && p.chave === 'gerenciar_permissoes';
-                return (
-                  <label
-                    key={p.chave}
-                    className={`flex items-start gap-2 rounded px-1.5 py-1 ${travado ? 'opacity-70' : 'cursor-pointer hover:bg-claro/[0.04]'}`}
-                  >
-                    <input
-                      type="checkbox"
-                      className="mt-0.5"
-                      checked={travado ? true : perms.has(p.chave)}
-                      disabled={travado}
-                      onChange={() => alternarPerm(p.chave)}
-                    />
-                    <span className="text-xs leading-tight">
-                      <span className="font-medium text-claro">{p.chave}</span>
-                      <span className="block text-suave">{p.descricao}</span>
-                    </span>
-                  </label>
-                );
-              })}
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <Campo label="Nome" obrigatorio>
+                <input aria-label="Nome" className={CLASSE_CAMPO} value={nome} onChange={(e) => setNome(e.target.value)} />
+              </Campo>
+              <Campo label="Cargo">
+                <select aria-label="Cargo" className={CLASSE_CAMPO} value={cargo} onChange={(e) => aplicarModelo(e.target.value)}>
+                  <option value="">Personalizado</option>
+                  {modelos.map((m) => (
+                    <option key={m.id} value={m.nome}>
+                      {m.nome}
+                    </option>
+                  ))}
+                </select>
+              </Campo>
             </div>
-          </fieldset>
 
-          {/* ACL de contas */}
-          <fieldset disabled={editandoSelf}>
-            <legend className="mb-2 text-sm font-semibold text-claro">Acesso a contas</legend>
-            <p className="mb-2 text-xs text-suave">
-              Sem nada marcado, vale a permissão geral (transferir/gerenciar contas). Marque para
-              restringir/conceder por conta.
-            </p>
-            <div className="flex flex-col gap-2 rounded-lg border border-borda p-3">
-              {contas.length === 0 && <p className="text-xs text-suave">Nenhuma conta cadastrada.</p>}
-              {contas.map((c) => (
-                <div key={c.id} className="flex items-center justify-between gap-3">
-                  <span className="text-sm text-claro">
-                    {c.nome} <span className="text-xs text-suave">({c.tipo})</span>
-                  </span>
-                  <select
-                    aria-label={`Acesso à conta ${c.nome}`}
-                    className={`${CLASSE_CAMPO} w-40`}
-                    value={contasSel.get(c.id) ?? ''}
-                    onChange={(e) => definirNivelConta(c.id, e.target.value as NivelConta)}
-                  >
-                    <option value="">Sem acesso explícito</option>
-                    <option value="ver">Ver</option>
-                    <option value="movimentar">Movimentar</option>
-                  </select>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <Campo label="E-mail" obrigatorio={ehNovo}>
+                <input
+                  type="email"
+                  aria-label="E-mail"
+                  className={CLASSE_CAMPO}
+                  value={email}
+                  disabled={!ehNovo}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="voce@pontao.com.br"
+                />
+              </Campo>
+
+              {ehNovo ? (
+                <Campo label="Senha inicial" obrigatorio>
+                  <input
+                    type="password"
+                    aria-label="Senha"
+                    className={CLASSE_CAMPO}
+                    value={senha}
+                    onChange={(e) => {
+                      setSenha(e.target.value);
+                      setSenhaModificada(true);
+                    }}
+                    placeholder="mínimo 6 caracteres"
+                    autoComplete="new-password"
+                  />
+                </Campo>
+              ) : editandoSelf ? (
+                <div className="flex flex-col justify-end">
+                  {!mostrarCampoSenha ? (
+                    <button
+                      type="button"
+                      onClick={() => setMostrarCampoSenha(true)}
+                      className="btn btn-suave text-xs px-3 py-2 w-fit"
+                    >
+                      Alterar minha senha
+                    </button>
+                  ) : (
+                    <Campo label="Nova senha" obrigatorio>
+                      <input
+                        type="password"
+                        aria-label="Senha"
+                        className={CLASSE_CAMPO}
+                        value={senha}
+                        onChange={(e) => {
+                          setSenha(e.target.value);
+                          setSenhaModificada(true);
+                        }}
+                        placeholder="mínimo 6 caracteres"
+                        autoComplete="new-password"
+                      />
+                    </Campo>
+                  )}
                 </div>
-              ))}
+              ) : null}
             </div>
-          </fieldset>
 
-          <div className="flex justify-end gap-2">
+            {/* Permissões */}
+            <fieldset disabled={editandoSelf}>
+              <legend className="mb-2 text-sm font-semibold text-claro">Permissões</legend>
+              {editandoSelf && (
+                <p className="mb-2 rounded-lg border border-borda bg-claro/[0.03] px-3 py-2 text-xs text-suave">
+                  Você não pode alterar as próprias permissões. Outro gerente faz isso, se necessário.
+                </p>
+              )}
+              <div className={`grid max-h-64 grid-cols-1 gap-1.5 overflow-y-auto rounded-lg border border-borda p-3 sm:grid-cols-2 ${editandoSelf ? 'opacity-60' : ''}`}>
+                {catalogo.map((p) => {
+                  // Trava de segurança: o gerente não pode remover a PRÓPRIA
+                  // permissão de gestão (evita se trancar para fora).
+                  const travado =
+                    !ehNovo && editando?.id === usuario.id && p.chave === 'gerenciar_permissoes';
+                  return (
+                    <label
+                      key={p.chave}
+                      className={`flex items-start gap-2 rounded px-1.5 py-1 ${travado ? 'opacity-70' : 'cursor-pointer hover:bg-claro/[0.04]'}`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-0.5"
+                        checked={travado ? true : perms.has(p.chave)}
+                        disabled={travado}
+                        onChange={() => alternarPerm(p.chave)}
+                      />
+                      <span className="text-xs leading-tight">
+                        <span className="font-medium text-claro">{p.chave}</span>
+                        <span className="block text-suave">{p.descricao}</span>
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            </fieldset>
+
+            {/* ACL de contas */}
+            <fieldset>
+              <legend className="mb-2 text-sm font-semibold text-claro">Acesso a contas</legend>
+              <p className="mb-2 text-xs text-suave">
+                Sem nada marcado, vale a permissão geral (transferir/gerenciar contas). Marque para
+                restringir/conceder por conta.
+              </p>
+              <div className="flex flex-col gap-2 rounded-lg border border-borda p-3">
+                {contas.length === 0 && <p className="text-xs text-suave">Nenhuma conta cadastrada.</p>}
+                {contas.map((c) => (
+                  <div key={c.id} className="flex items-center justify-between gap-3">
+                    <span className="text-sm text-claro">
+                      {c.nome} <span className="text-xs text-suave">({c.tipo})</span>
+                    </span>
+                    <select
+                      aria-label={`Acesso à conta ${c.nome}`}
+                      className={`${CLASSE_CAMPO} w-40`}
+                      value={contasSel.get(c.id) ?? ''}
+                      onChange={(e) => definirNivelConta(c.id, e.target.value as NivelConta)}
+                    >
+                      <option value="">Sem acesso explícito</option>
+                      <option value="ver">Ver</option>
+                      <option value="movimentar">Movimentar</option>
+                    </select>
+                  </div>
+                ))}
+              </div>
+            </fieldset>
+          </div>
+
+          {/* Rodapé fixado */}
+          <div className="flex justify-end gap-2 border-t border-borda/30 pt-4">
             <button type="button" className="btn btn-suave px-4 py-2 text-sm" onClick={fechar}>
               Cancelar
             </button>
