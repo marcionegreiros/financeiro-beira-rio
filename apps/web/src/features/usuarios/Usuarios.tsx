@@ -6,6 +6,7 @@ import {
   criarUsuario,
   redefinirSenha,
   setAtivo,
+  excluirUsuario,
   atualizarPerfil,
   salvarPermissoes,
   salvarContasAcesso,
@@ -225,6 +226,25 @@ export function Usuarios({ usuario }: { usuario: UsuarioAtual }) {
     }
   }
 
+  async function aoExcluir(u: UsuarioAdmin) {
+    if (
+      !confirm(
+        `Excluir o usuário "${u.nome}" e o login dele? Esta ação é definitiva. ` +
+          'Só funciona se ele nunca tiver sido usado no sistema.',
+      )
+    )
+      return;
+    try {
+      await excluirUsuario(u.id);
+      toast.sucesso('Usuário excluído.');
+      await recarregar();
+    } catch (e) {
+      console.error(e);
+      // A Edge Function devolve mensagem amigável (ex.: "já tem histórico… inative-o").
+      toast.erro(e instanceof Error ? e.message : 'Erro ao excluir usuário.');
+    }
+  }
+
   const colunas: Coluna<UsuarioAdmin>[] = [
     {
       chave: 'nome',
@@ -279,6 +299,16 @@ export function Usuarios({ usuario }: { usuario: UsuarioAtual }) {
               onClick={() => void alternarAtivo(u)}
             >
               {u.ativo ? 'Desativar' : 'Reativar'}
+            </button>
+          )}
+          {u.id !== usuario.id && (
+            <button
+              type="button"
+              className="btn px-3 py-1.5 text-xs border border-negativo/30 bg-negativo/[0.06] text-negativo hover:bg-negativo/15"
+              onClick={() => void aoExcluir(u)}
+              title="Excluir (só se nunca usado)"
+            >
+              Excluir
             </button>
           )}
         </div>

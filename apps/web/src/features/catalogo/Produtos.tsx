@@ -1,7 +1,9 @@
 import { useState, useEffect, type FormEvent } from 'react';
-import { 
-  salvarProduto, 
-  listarCategorias, 
+import {
+  salvarProduto,
+  listarCategorias,
+  salvarCategoria,
+  removerCategoria,
   adicionarPrecoProduto,
   adicionarCustoProduto,
   listarPrecosProduto,
@@ -12,12 +14,16 @@ import {
   removerPrecoProduto,
   removerCustoProduto,
   removerEntradaMercadoria,
+  removerProduto,
   verificarFechamentoStatus,
   type Categoria,
   type PrecoProdutoHistorico,
   type CustoProdutoHistorico,
   type EntradaMercadoria,
-  type ProdutoNaData
+  type ProdutoNaData,
+  temFechamentoOperacional,
+  definirEstoqueInicialProduto,
+  buscarEstoqueInicialProduto
 } from '../../data/repositorios';
 import { uuidv7 } from '../../lib/uuidv7';
 import { useToast } from '../../components/ui/Toast';
@@ -60,6 +66,13 @@ export function Produtos({ usuario, dataSelecionada }: ProdutosProps) {
   const [modalPrecoAberto, setModalPrecoAberto] = useState(false);
   const [modalCustoAberto, setModalCustoAberto] = useState(false);
   const [modalAcoesAberto, setModalAcoesAberto] = useState(false);
+  const [modalCategoriasAberto, setModalCategoriasAberto] = useState(false);
+
+  // Gestão de categorias de produto
+  const [catEditandoId, setCatEditandoId] = useState<string | null>(null);
+  const [catNome, setCatNome] = useState('');
+  const [catOrdem, setCatOrdem] = useState(10);
+  const [salvandoCategoria, setSalvandoCategoria] = useState(false);
 
   // Estados dos formulários:
   // 1. Dados gerais (Novo / Editar)
@@ -71,6 +84,8 @@ export function Produtos({ usuario, dataSelecionada }: ProdutosProps) {
   const [alertaMuitoBaixo, setAlertaMuitoBaixo] = useState('');
   const [ativo, setAtivo] = useState(true);
   const [salvando, setSalvando] = useState(false);
+  const [estoqueInicial, setEstoqueInicial] = useState('');
+  const [bloquearDiaZero, setBloquearDiaZero] = useState(false);
 
   // 2. Entrada de Estoque
   const [entradaQtdStr, setEntradaQtdStr] = useState('');
@@ -122,6 +137,7 @@ export function Produtos({ usuario, dataSelecionada }: ProdutosProps) {
 
   useEffect(() => {
     void carregarCategorias();
+    temFechamentoOperacional().then(setBloquearDiaZero).catch(console.error);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -132,7 +148,6 @@ export function Produtos({ usuario, dataSelecionada }: ProdutosProps) {
 
 
 
-  // Abertura de Modais
   function abrirNovo() {
     setNome('');
     setCategoriaId(categorias[0]?.id ?? '');
@@ -142,6 +157,7 @@ export function Produtos({ usuario, dataSelecionada }: ProdutosProps) {
     setAlertaBaixo('');
     setAlertaMuitoBaixo('');
     setAtivo(true);
+    setEstoqueInicial('');
     setModalNovoAberto(true);
   }
 
@@ -154,6 +170,16 @@ export function Produtos({ usuario, dataSelecionada }: ProdutosProps) {
     setAlertaBaixo(p.alertaBaixo != null ? String(p.alertaBaixo) : '');
     setAlertaMuitoBaixo(p.alertaMuitoBaixo != null ? String(p.alertaMuitoBaixo) : '');
     setAtivo(p.ativo);
+    setEstoqueInicial('');
+
+    if (p.modoApuracao === 'contagem') {
+      buscarEstoqueInicialProduto(p.id)
+        .then((val) => {
+          if (val !== null) setEstoqueInicial(String(val).replace('.', ','));
+        })
+        .catch(console.error);
+    }
+
     setModalEditarAberto(true);
   }
 
@@ -253,6 +279,14 @@ export function Produtos({ usuario, dataSelecionada }: ProdutosProps) {
         ativo,
       };
       await salvarProduto(prod);
+
+      if (modoApuracao === 'contagem' && !bloquearDiaZero && estoqueInicial.trim() !== '') {
+        const qtd = Number(estoqueInicial.replace(',', '.'));
+        if (!isNaN(qtd)) {
+          await definirEstoqueInicialProduto(prod.id, qtd);
+        }
+      }
+
       toast.sucesso('Produto cadastrado com sucesso.');
       setModalNovoAberto(false);
       await carregarProdutos();
@@ -289,6 +323,14 @@ export function Produtos({ usuario, dataSelecionada }: ProdutosProps) {
         ativo,
       };
       await salvarProduto(prod);
+
+      if (modoApuracao === 'contagem' && !bloquearDiaZero && estoqueInicial.trim() !== '') {
+        const qtd = Number(estoqueInicial.replace(',', '.'));
+        if (!isNaN(qtd)) {
+          await definirEstoqueInicialProduto(prod.id, qtd);
+        }
+      }
+
       toast.sucesso('Produto atualizado com sucesso.');
       setModalEditarAberto(false);
       await carregarProdutos();
@@ -490,6 +532,79 @@ export function Produtos({ usuario, dataSelecionada }: ProdutosProps) {
     }
   }
 
+  // ---- Gestão de categorias de produto ----
+  function limparFormCategoria() {
+    setCatEditandoId(null);
+    setCatNome('');
+    const prox = categorias.length > 0 ? Math.max(...categorias.map((c) => c.ordem)) + 10 : 10;
+    setCatOrdem(prox);
+  }
+
+  function abrirCategorias() {
+    limparFormCategoria();
+    setModalCategoriasAberto(true);
+  }
+
+  function editarCategoria(c: Categoria) {
+    setCatEditandoId(c.id);
+    setCatNome(c.nome);
+    setCatOrdem(c.ordem);
+  }
+
+  async function aoSalvarCategoria(e: FormEvent) {
+    e.preventDefault();
+    if (!catNome.trim()) {
+      toast.erro('Informe o nome da categoria.');
+      return;
+    }
+    setSalvandoCategoria(true);
+    try {
+      await salvarCategoria({ id: catEditandoId ?? uuidv7(), nome: catNome.trim(), ordem: catOrdem });
+      toast.sucesso(catEditandoId ? 'Categoria atualizada.' : 'Categoria cadastrada.');
+      await carregarCategorias();
+      limparFormCategoria();
+    } catch (err) {
+      console.error(err);
+      toast.erro('Erro ao salvar a categoria.');
+    } finally {
+      setSalvandoCategoria(false);
+    }
+  }
+
+  async function aoExcluirCategoria(c: Categoria) {
+    if (!confirm(`Excluir a categoria "${c.nome}"? Esta ação é definitiva.`)) return;
+    try {
+      await removerCategoria(c.id);
+      toast.sucesso('Categoria excluída.');
+      if (catEditandoId === c.id) limparFormCategoria();
+      await carregarCategorias();
+    } catch (err) {
+      console.error(err);
+      toast.erro(
+        (err as Error)?.message === 'NAO_EXCLUIDO'
+          ? 'Esta categoria tem produtos vinculados — mova/remova os produtos antes.'
+          : 'Erro ao excluir a categoria.',
+      );
+    }
+  }
+
+  async function aoExcluirProduto(p: ProdutoNaData) {
+    if (!confirm(`Excluir o produto "${p.nome}"? Esta ação é definitiva.`)) return;
+    try {
+      await removerProduto(p.id);
+      toast.sucesso('Produto excluído.');
+      setModalAcoesAberto(false);
+      await carregarProdutos();
+    } catch (err) {
+      console.error(err);
+      toast.erro(
+        (err as Error)?.message === 'NAO_EXCLUIDO'
+          ? 'Este produto já foi usado (contagem, entrada, perda ou venda) — apenas inative-o.'
+          : 'Erro ao excluir produto.',
+      );
+    }
+  }
+
   const colunas: Coluna<ProdutoNaData>[] = [
     {
       chave: 'ordem',
@@ -598,9 +713,14 @@ export function Produtos({ usuario, dataSelecionada }: ProdutosProps) {
           </select>
         </div>
         {podeCadastrar && (
-          <button type="button" onClick={abrirNovo} className="btn btn-primario px-4 py-2 text-sm">
-            <IconePlus /> Novo produto
-          </button>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={abrirCategorias} className="btn btn-suave px-4 py-2 text-sm">
+              Categorias
+            </button>
+            <button type="button" onClick={abrirNovo} className="btn btn-primario px-4 py-2 text-sm">
+              <IconePlus /> Novo produto
+            </button>
+          </div>
         )}
       </div>
 
@@ -683,6 +803,17 @@ export function Produtos({ usuario, dataSelecionada }: ProdutosProps) {
                 onChange={(e) => setAlertaMuitoBaixo(e.target.value)}
               />
             </Campo>
+            {modoApuracao === 'contagem' && !bloquearDiaZero && (
+              <Campo label="Estoque inicial (Dia Zero)" dica="Apenas para iniciar o sistema">
+                <input
+                  type="text"
+                  className={`${CLASSE_CAMPO} numeros text-right`}
+                  placeholder="Ex.: 0,00"
+                  value={estoqueInicial}
+                  onChange={(e) => setEstoqueInicial(e.target.value)}
+                />
+              </Campo>
+            )}
           </div>
 
           <label className="flex items-center gap-2 text-sm text-claro mt-2">
@@ -777,6 +908,21 @@ export function Produtos({ usuario, dataSelecionada }: ProdutosProps) {
                 onChange={(e) => setAlertaMuitoBaixo(e.target.value)}
               />
             </Campo>
+            {modoApuracao === 'contagem' && (
+              <Campo 
+                label={bloquearDiaZero ? "Estoque inicial (Dia Zero) [Bloqueado]" : "Estoque inicial (Dia Zero)"} 
+                dica={bloquearDiaZero ? "Bloqueado pois já existem fechamentos posteriores" : "Estoque de partida do sistema"}
+              >
+                <input
+                  type="text"
+                  className={`${CLASSE_CAMPO} numeros text-right ${bloquearDiaZero ? 'bg-claro/5 cursor-not-allowed text-suave' : ''}`}
+                  placeholder="Ex.: 0,00"
+                  disabled={bloquearDiaZero}
+                  value={estoqueInicial}
+                  onChange={(e) => setEstoqueInicial(e.target.value)}
+                />
+              </Campo>
+            )}
           </div>
 
           <label className="flex items-center gap-2 text-sm text-claro mt-2">
@@ -1213,6 +1359,105 @@ export function Produtos({ usuario, dataSelecionada }: ProdutosProps) {
               </button>
             </>
           )}
+
+          {podeCadastrar && (
+            <button
+              type="button"
+              onClick={() => {
+                if (selecionado) void aoExcluirProduto(selecionado);
+              }}
+              className="w-full flex items-center gap-3 px-4 py-3 rounded-xl border border-negativo/20 bg-negativo/[0.04] hover:bg-negativo/10 hover:border-negativo/40 transition-all text-left text-sm font-semibold text-negativo group"
+            >
+              <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-negativo/10 text-negativo">
+                <IconeLixeira />
+              </div>
+              <span className="flex-1">Excluir Produto</span>
+              <IconeChevronDireita />
+            </button>
+          )}
+        </div>
+      </Modal>
+
+      {/* Modal: gestão de categorias de produto */}
+      <Modal
+        aberto={modalCategoriasAberto}
+        aoFechar={() => setModalCategoriasAberto(false)}
+        titulo="Categorias de produto"
+        descricao="Agrupam os produtos e definem a ordem no fechamento. Só dá para excluir uma categoria sem produtos."
+        larguraMax="max-w-lg"
+      >
+        <div className="flex flex-col gap-6">
+          <form onSubmit={aoSalvarCategoria} className="flex flex-col gap-4 rounded-xl border border-borda bg-claro/[0.02] p-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              <div className="sm:col-span-2">
+                <Campo label="Nome" obrigatorio>
+                  <input
+                    className={CLASSE_CAMPO}
+                    placeholder="Ex.: Bebidas, Conveniência"
+                    value={catNome}
+                    onChange={(e) => setCatNome(e.target.value)}
+                  />
+                </Campo>
+              </div>
+              <Campo label="Ordem">
+                <input
+                  type="number"
+                  aria-label="Ordem da categoria"
+                  className={`${CLASSE_CAMPO} numeros text-right`}
+                  value={catOrdem}
+                  onChange={(e) => setCatOrdem(Number(e.target.value))}
+                />
+              </Campo>
+            </div>
+            <div className="flex justify-end gap-2">
+              {catEditandoId && (
+                <button type="button" className="btn btn-suave px-4 py-2 text-sm" onClick={limparFormCategoria}>
+                  Cancelar edição
+                </button>
+              )}
+              <button type="submit" disabled={salvandoCategoria} className="btn btn-primario px-4 py-2 text-sm">
+                {salvandoCategoria ? 'Salvando…' : catEditandoId ? 'Salvar alterações' : 'Adicionar categoria'}
+              </button>
+            </div>
+          </form>
+
+          {categorias.length === 0 ? (
+            <div className="text-center text-xs text-suave py-4">Nenhuma categoria cadastrada.</div>
+          ) : (
+            <ul className="flex flex-col gap-2">
+              {[...categorias].sort((a, b) => a.ordem - b.ordem).map((c) => (
+                <li key={c.id} className="flex items-center justify-between rounded-lg border border-borda px-3 py-2">
+                  <span className="text-sm text-claro">
+                    <span className="numeros text-xs text-suave mr-2">{c.ordem}</span>
+                    {c.nome}
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => editarCategoria(c)}
+                      className="rounded-md px-2 py-1 text-xs font-medium text-suave hover:bg-claro/10 hover:text-ambar transition-colors"
+                    >
+                      Editar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void aoExcluirCategoria(c)}
+                      title="Excluir (só se sem produtos)"
+                      className="rounded-md px-2 py-1 text-xs font-medium text-negativo hover:bg-negativo/10 transition-colors"
+                    >
+                      Excluir
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <div className="flex justify-end border-t border-borda pt-4">
+            <button type="button" className="btn btn-suave px-4 py-2 text-sm" onClick={() => setModalCategoriasAberto(false)}>
+              Fechar
+            </button>
+          </div>
         </div>
       </Modal>
     </div>

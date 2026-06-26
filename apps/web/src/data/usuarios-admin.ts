@@ -144,6 +144,39 @@ export async function setAtivo(usuarioId: string, ativo: boolean): Promise<void>
   await invocarAdmin({ action: 'set_ativo', usuario_id: usuarioId, ativo });
 }
 
+/**
+ * Exclui DE VERDADE um usuário (linha + login no Auth). A Edge Function recusa se
+ * o usuário já tiver histórico (responsável por fechamento, autor de movimento,
+ * vendedor ou na auditoria) e também a auto-exclusão.
+ */
+export async function excluirUsuario(usuarioId: string): Promise<void> {
+  await invocarAdmin({ action: 'excluir', usuario_id: usuarioId });
+}
+
+/**
+ * Diz se um usuário ainda pode ser excluído (nunca foi usado em nenhum evento).
+ * É só para a UI habilitar/desabilitar o botão; a checagem definitiva é no servidor.
+ */
+export async function verificarUsoUsuario(usuarioId: string): Promise<boolean> {
+  const alvos: Array<[string, string]> = [
+    ['fechamento', 'responsavel_id'],
+    ['movimento', 'criado_por'],
+    ['venda_avulsa', 'vendedor_id'],
+    ['auditoria', 'usuario_id'],
+  ];
+  const contagens = await Promise.all(
+    alvos.map(async ([tabela, coluna]) => {
+      const { count, error } = await supabase
+        .from(tabela)
+        .select('*', { count: 'exact', head: true })
+        .eq(coluna, usuarioId);
+      if (error) throw error;
+      return count ?? 0;
+    }),
+  );
+  return contagens.reduce((s, n) => s + n, 0) === 0;
+}
+
 /** Atualiza nome/cargo de um usuário (gerente em qualquer um; pessoa na própria). */
 export async function atualizarPerfil(
   usuarioId: string,

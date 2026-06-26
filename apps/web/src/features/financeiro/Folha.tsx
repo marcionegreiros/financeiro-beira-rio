@@ -10,6 +10,7 @@ import {
   pagarFechamentoFolha,
   listarMovimentos,
   removerDespesa,
+  removerFuncionario,
   obterValesFuncionariosMes,
   type Funcionario,
   type FechamentoFolha,
@@ -257,6 +258,22 @@ export function Folha({ usuarioId }: { usuarioId: string }) {
     }
   }
 
+  async function aoExcluirFuncionario(f: Funcionario) {
+    if (!confirm(`Excluir o funcionário "${f.nome}"? Esta ação é definitiva.`)) return;
+    try {
+      await removerFuncionario(f.id);
+      toast.sucesso('Funcionário excluído.');
+      await recarregar();
+    } catch (e) {
+      console.error(e);
+      toast.erro(
+        (e as Error)?.message === 'NAO_EXCLUIDO'
+          ? 'Este funcionário já tem vales ou folha lançados — apenas inative-o.'
+          : 'Erro ao excluir o funcionário.',
+      );
+    }
+  }
+
   async function abrirFecharMes(f: Funcionario) {
     setFecharFunc(f);
     const comp = mesCorrente();
@@ -343,6 +360,14 @@ export function Folha({ usuarioId }: { usuarioId: string }) {
           </button>
           <button type="button" className="btn btn-suave px-2.5 py-1.5 text-xs" onClick={() => abrirEditarFuncionario(f)}>
             Editar
+          </button>
+          <button
+            type="button"
+            className="btn px-2.5 py-1.5 text-xs border border-negativo/30 bg-negativo/[0.06] text-negativo hover:bg-negativo/15"
+            onClick={() => void aoExcluirFuncionario(f)}
+            title="Excluir (só se nunca usado)"
+          >
+            Excluir
           </button>
         </div>
       ),

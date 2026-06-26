@@ -18,12 +18,18 @@ import {
   removerCustoCombustivel,
   removerEntradaCombustivel,
   verificarFechamentoStatus,
+  removerTanque,
+  removerBomba,
+  removerCombustivel,
   type TanqueConfig,
   type Combustivel,
   type BombaConfig,
   type EntradaCombustivel,
   type MedicaoTanque,
   type VigenciaCombustivel,
+  temFechamentoOperacional,
+  definirLeituraInicialBomba,
+  buscarLeituraInicialBomba,
 } from '../../data/repositorios';
 import { uuidv7 } from '../../lib/uuidv7';
 import { useToast } from '../../components/ui/Toast';
@@ -67,7 +73,6 @@ export function Combustivel({ usuario, dataSelecionada }: CombustivelProps) {
   const [modalAcoesAberto, setModalAcoesAberto] = useState(false);
   const [modalTanqueAberto, setModalTanqueAberto] = useState(false);
   const [editandoTanque, setEditandoTanque] = useState(false);
-  const [modalCombustivelAberto, setModalCombustivelAberto] = useState(false);
   const [modalEntradaAberto, setModalEntradaAberto] = useState(false);
   const [modalMedicaoAberto, setModalMedicaoAberto] = useState(false);
   const [modalPrecoAberto, setModalPrecoAberto] = useState(false);
@@ -81,8 +86,14 @@ export function Combustivel({ usuario, dataSelecionada }: CombustivelProps) {
   const [alertaStr, setAlertaStr] = useState('');
   const [ativoTanque, setAtivoTanque] = useState(true);
 
-  // Form: combustível
+  // Wizard unificado: criação rápida de combustível.
+  const [modalNovoCombustivelAberto, setModalNovoCombustivelAberto] = useState(false);
+  const [nomeNovoCombustivel, setNomeNovoCombustivel] = useState('');
+  const [salvandoNovoCombustivel, setSalvandoNovoCombustivel] = useState(false);
+
+  // Form: combustível (modal de gestão de combustíveis)
   const [nomeCombustivel, setNomeCombustivel] = useState('');
+  const [modalCombustiveisAberto, setModalCombustiveisAberto] = useState(false);
 
   // Form: entrada de carga
   const [entradaLitrosStr, setEntradaLitrosStr] = useState('');
@@ -115,6 +126,9 @@ export function Combustivel({ usuario, dataSelecionada }: CombustivelProps) {
   const [bombas, setBombas] = useState<BombaConfig[]>([]);
   const [carregandoBombas, setCarregandoBombas] = useState(false);
   const [novaBombaNome, setNovaBombaNome] = useState('');
+  const [leituraInicial, setLeituraInicial] = useState('');
+  const [bloquearDiaZero, setBloquearDiaZero] = useState(false);
+  const [leiturasIniciais, setLeiturasIniciais] = useState<Record<string, number>>({});
 
   const [salvando, setSalvando] = useState(false);
 
@@ -134,6 +148,7 @@ export function Combustivel({ usuario, dataSelecionada }: CombustivelProps) {
 
   useEffect(() => {
     void carregarTanques();
+    temFechamentoOperacional().then(setBloquearDiaZero).catch(console.error);
   }, [dataSelecionada]);
 
   // ---- Aberturas de modal ----
@@ -144,7 +159,6 @@ export function Combustivel({ usuario, dataSelecionada }: CombustivelProps) {
 
   function abrirNovoTanque() {
     setEditandoTanque(false);
-    setSelecionado(null);
     setNomeTanque('');
     setCombustivelId(combustiveis[0]?.id ?? '');
     setCapacidadeStr('');
@@ -164,10 +178,12 @@ export function Combustivel({ usuario, dataSelecionada }: CombustivelProps) {
     setModalTanqueAberto(true);
   }
 
-  function abrirNovoCombustivel() {
+  function abrirCombustiveis() {
     setNomeCombustivel('');
-    setModalCombustivelAberto(true);
+    setModalCombustiveisAberto(true);
   }
+
+
 
   async function abrirEntrada(t: TanqueConfig) {
     setSelecionado(t);
@@ -244,10 +260,20 @@ export function Combustivel({ usuario, dataSelecionada }: CombustivelProps) {
   async function abrirBombas(t: TanqueConfig) {
     setSelecionado(t);
     setNovaBombaNome('');
+    setLeituraInicial('');
     setModalBombasAberto(true);
     setCarregandoBombas(true);
     try {
-      setBombas(await listarBombasTanque(t.id));
+      const lista = await listarBombasTanque(t.id);
+      setBombas(lista);
+      const mapaLeituras: Record<string, number> = {};
+      await Promise.all(
+        lista.map(async (b) => {
+          const val = await buscarLeituraInicialBomba(b.id);
+          if (val !== null) mapaLeituras[b.id] = val;
+        })
+      );
+      setLeiturasIniciais(mapaLeituras);
     } catch (err) {
       console.error(err);
       toast.erro('Falha ao carregar bombas.');
@@ -260,21 +286,25 @@ export function Combustivel({ usuario, dataSelecionada }: CombustivelProps) {
   async function aoSalvarTanque(e: FormEvent) {
     e.preventDefault();
     if (!nomeTanque.trim()) return toast.erro('Informe o nome do tanque.');
-    if (!combustivelId) return toast.erro('Selecione o combustível.');
+    if (!combustivelId) return toast.erro('Selecione o combustível (ou crie um em "+ Novo").');
     const capacidade = parseLitros(capacidadeStr);
     if (isNaN(capacidade) || capacidade <= 0) return toast.erro('Informe a capacidade em litros.');
     const alerta = alertaStr.trim() ? parseLitros(alertaStr) : 0;
     if (isNaN(alerta) || alerta < 0) return toast.erro('Nível de alerta inválido.');
+
     setSalvando(true);
     try {
+      // 1) Tanque.
+      const tanqueId = editandoTanque && selecionado ? selecionado.id : uuidv7();
       await salvarTanque({
-        id: editandoTanque && selecionado ? selecionado.id : uuidv7(),
+        id: tanqueId,
         nome: nomeTanque.trim(),
         combustivelId,
         capacidadeLitros: capacidade,
         nivelAlertaLitros: alerta,
         ativo: ativoTanque,
       });
+
       toast.sucesso(editandoTanque ? 'Tanque atualizado.' : 'Tanque cadastrado.');
       setModalTanqueAberto(false);
       await carregarTanques();
@@ -286,6 +316,80 @@ export function Combustivel({ usuario, dataSelecionada }: CombustivelProps) {
     }
   }
 
+  /**
+   * Criação rápida de combustível pelo mini-modal aberto sobre o form do tanque.
+   * Cria, recarrega a lista e já deixa selecionado — sem perder o que já foi
+   * digitado no tanque (o modal do tanque continua montado por trás).
+   */
+  async function aoCriarCombustivelRapido(e: FormEvent) {
+    e.preventDefault();
+    if (!nomeNovoCombustivel.trim()) return toast.erro('Informe o nome do combustível.');
+    setSalvandoNovoCombustivel(true);
+    try {
+      const novoId = uuidv7();
+      await salvarCombustivel(novoId, nomeNovoCombustivel.trim());
+      setCombustiveis(await listarCombustiveis());
+      setCombustivelId(novoId);
+      toast.sucesso('Combustível criado e selecionado.');
+      setModalNovoCombustivelAberto(false);
+      setNomeNovoCombustivel('');
+    } catch (err) {
+      console.error(err);
+      toast.erro('Erro ao criar combustível.');
+    } finally {
+      setSalvandoNovoCombustivel(false);
+    }
+  }
+
+  async function aoExcluirTanque(t: TanqueConfig) {
+    if (!confirm(`Excluir o tanque "${t.nome}" e seus bicos? Esta ação é definitiva.`)) return;
+    try {
+      await removerTanque(t.id);
+      toast.sucesso('Tanque excluído.');
+      setModalAcoesAberto(false);
+      await carregarTanques();
+    } catch (err) {
+      console.error(err);
+      toast.erro(
+        (err as Error)?.message === 'NAO_EXCLUIDO'
+          ? 'Este tanque já foi usado (carga, medição ou leitura) — apenas inative-o.'
+          : 'Erro ao excluir tanque.',
+      );
+    }
+  }
+
+  async function aoExcluirBomba(b: BombaConfig) {
+    if (!confirm(`Excluir o bico "${b.nome}"? Esta ação é definitiva.`)) return;
+    try {
+      await removerBomba(b.id);
+      toast.sucesso('Bico excluído.');
+      setBombas((prev) => prev.filter((x) => x.id !== b.id));
+    } catch (err) {
+      console.error(err);
+      toast.erro(
+        (err as Error)?.message === 'NAO_EXCLUIDO'
+          ? 'Este bico já tem leitura de encerrante — apenas inative-o.'
+          : 'Erro ao excluir bico.',
+      );
+    }
+  }
+
+  async function aoExcluirCombustivel(c: Combustivel) {
+    if (!confirm(`Excluir o combustível "${c.nome}"? Esta ação é definitiva.`)) return;
+    try {
+      await removerCombustivel(c.id);
+      toast.sucesso('Combustível excluído.');
+      await carregarTanques();
+    } catch (err) {
+      console.error(err);
+      toast.erro(
+        (err as Error)?.message === 'NAO_EXCLUIDO'
+          ? 'Este combustível está em uso por algum tanque — remova/realoque o tanque antes.'
+          : 'Erro ao excluir combustível.',
+      );
+    }
+  }
+
   async function aoSalvarCombustivel(e: FormEvent) {
     e.preventDefault();
     if (!nomeCombustivel.trim()) return toast.erro('Informe o nome do combustível.');
@@ -293,7 +397,7 @@ export function Combustivel({ usuario, dataSelecionada }: CombustivelProps) {
     try {
       await salvarCombustivel(uuidv7(), nomeCombustivel.trim());
       toast.sucesso('Combustível cadastrado.');
-      setModalCombustivelAberto(false);
+      setNomeCombustivel('');
       await carregarTanques();
     } catch (err) {
       console.error(err);
@@ -398,9 +502,20 @@ export function Combustivel({ usuario, dataSelecionada }: CombustivelProps) {
     if (!novaBombaNome.trim()) return toast.erro('Informe o nome da bomba/bico.');
     setSalvando(true);
     try {
-      await salvarBomba({ id: uuidv7(), tanqueId: selecionado.id, nome: novaBombaNome.trim(), ativo: true });
+      const bombaId = uuidv7();
+      await salvarBomba({ id: bombaId, tanqueId: selecionado.id, nome: novaBombaNome.trim(), ativo: true });
+
+      if (!bloquearDiaZero && leituraInicial.trim() !== '') {
+        const leitura = Number(leituraInicial.replace(',', '.'));
+        if (!isNaN(leitura)) {
+          await definirLeituraInicialBomba(bombaId, leitura);
+          setLeiturasIniciais((prev) => ({ ...prev, [bombaId]: leitura }));
+        }
+      }
+
       toast.sucesso('Bomba adicionada.');
       setNovaBombaNome('');
+      setLeituraInicial('');
       setBombas(await listarBombasTanque(selecionado.id));
     } catch (err) {
       console.error(err);
@@ -636,8 +751,8 @@ export function Combustivel({ usuario, dataSelecionada }: CombustivelProps) {
         </div>
         {podeGerenciar && (
           <div className="flex items-center gap-2">
-            <button type="button" onClick={abrirNovoCombustivel} className="btn btn-suave px-4 py-2 text-sm">
-              Novo combustível
+            <button type="button" onClick={abrirCombustiveis} className="btn btn-suave px-4 py-2 text-sm">
+              Combustíveis
             </button>
             <button type="button" onClick={abrirNovoTanque} className="btn btn-primario px-4 py-2 text-sm">
               <IconePlus /> Novo tanque
@@ -659,7 +774,11 @@ export function Combustivel({ usuario, dataSelecionada }: CombustivelProps) {
         aberto={modalTanqueAberto}
         aoFechar={() => setModalTanqueAberto(false)}
         titulo={editandoTanque ? `Editar tanque: ${selecionado?.nome ?? ''}` : 'Novo tanque'}
-        descricao="Capacidade e nível de alerta são informados em litros."
+        descricao={
+          editandoTanque
+            ? 'Capacidade e nível de alerta são informados em litros.'
+            : 'Cadastre o tanque, o combustível e os bicos de uma vez só.'
+        }
         larguraMax="max-w-xl"
       >
         <form onSubmit={aoSalvarTanque} className="flex flex-col gap-4">
@@ -673,21 +792,33 @@ export function Combustivel({ usuario, dataSelecionada }: CombustivelProps) {
               />
             </Campo>
             <Campo label="Combustível" obrigatorio>
-              <select
-                aria-label="Combustível"
-                className={CLASSE_CAMPO}
-                value={combustivelId}
-                onChange={(e) => setCombustivelId(e.target.value)}
-              >
-                <option value="" disabled>
-                  Selecione…
-                </option>
-                {combustiveis.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.nome}
+              <div className="flex gap-2">
+                <select
+                  aria-label="Combustível"
+                  className={CLASSE_CAMPO}
+                  value={combustivelId}
+                  onChange={(e) => setCombustivelId(e.target.value)}
+                >
+                  <option value="" disabled>
+                    {combustiveis.length === 0 ? 'Nenhum — clique em + Novo' : 'Selecione…'}
                   </option>
-                ))}
-              </select>
+                  {combustiveis.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.nome}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNomeNovoCombustivel('');
+                    setModalNovoCombustivelAberto(true);
+                  }}
+                  className="btn btn-suave px-3 py-2 text-sm whitespace-nowrap"
+                >
+                  + Novo
+                </button>
+              </div>
             </Campo>
             <Campo label="Capacidade (litros)" obrigatorio>
               <input
@@ -706,6 +837,9 @@ export function Combustivel({ usuario, dataSelecionada }: CombustivelProps) {
               />
             </Campo>
           </div>
+
+
+
           <label className="flex items-center gap-2 text-sm text-claro mt-2">
             <input
               type="checkbox"
@@ -726,32 +860,88 @@ export function Combustivel({ usuario, dataSelecionada }: CombustivelProps) {
         </form>
       </Modal>
 
-      {/* Modal: Novo combustível */}
+      {/* Mini-modal: criação rápida de combustível (abre sobre o form do tanque) */}
       <Modal
-        aberto={modalCombustivelAberto}
-        aoFechar={() => setModalCombustivelAberto(false)}
+        aberto={modalNovoCombustivelAberto}
+        aoFechar={() => setModalNovoCombustivelAberto(false)}
         titulo="Novo combustível"
-        descricao="O preço e o custo são definidos por combustível e valem para todos os tanques que o usam."
-        larguraMax="max-w-md"
+        descricao="Cria o combustível e já seleciona no tanque. Você volta sem perder o que digitou."
+        larguraMax="max-w-sm"
       >
-        <form onSubmit={aoSalvarCombustivel} className="flex flex-col gap-4">
+        <form onSubmit={aoCriarCombustivelRapido} className="flex flex-col gap-4">
           <Campo label="Nome do combustível" obrigatorio>
             <input
+              autoFocus
               className={CLASSE_CAMPO}
               placeholder="Ex.: Gasolina Comum, Diesel S10"
-              value={nomeCombustivel}
-              onChange={(e) => setNomeCombustivel(e.target.value)}
+              value={nomeNovoCombustivel}
+              onChange={(e) => setNomeNovoCombustivel(e.target.value)}
             />
           </Campo>
           <div className="mt-2 flex justify-end gap-2 border-t border-borda pt-4">
-            <button type="button" className="btn btn-suave px-4 py-2 text-sm" onClick={() => setModalCombustivelAberto(false)}>
+            <button
+              type="button"
+              className="btn btn-suave px-4 py-2 text-sm"
+              onClick={() => setModalNovoCombustivelAberto(false)}
+            >
               Cancelar
             </button>
-            <button type="submit" disabled={salvando} className="btn btn-primario px-4 py-2 text-sm">
-              {salvando ? 'Salvando…' : 'Cadastrar'}
+            <button type="submit" disabled={salvandoNovoCombustivel} className="btn btn-primario px-4 py-2 text-sm">
+              {salvandoNovoCombustivel ? 'Criando…' : 'Criar e selecionar'}
             </button>
           </div>
         </form>
+      </Modal>
+
+      {/* Modal: Gestão de combustíveis (listar / adicionar / excluir) */}
+      <Modal
+        aberto={modalCombustiveisAberto}
+        aoFechar={() => setModalCombustiveisAberto(false)}
+        titulo="Combustíveis"
+        descricao="O preço e o custo são definidos por combustível e valem para todos os tanques que o usam. Só dá para excluir um combustível que não esteja em nenhum tanque."
+        larguraMax="max-w-md"
+      >
+        <div className="flex flex-col gap-6">
+          <form onSubmit={aoSalvarCombustivel} className="flex items-end gap-2 rounded-xl border border-borda bg-claro/[0.02] p-4">
+            <Campo label="Novo combustível" obrigatorio>
+              <input
+                className={CLASSE_CAMPO}
+                placeholder="Ex.: Gasolina Comum, Diesel S10"
+                value={nomeCombustivel}
+                onChange={(e) => setNomeCombustivel(e.target.value)}
+              />
+            </Campo>
+            <button type="submit" disabled={salvando} className="btn btn-primario py-2 px-4 text-sm">
+              {salvando ? '…' : 'Adicionar'}
+            </button>
+          </form>
+
+          {combustiveis.length === 0 ? (
+            <div className="text-center text-xs text-suave py-4">Nenhum combustível cadastrado.</div>
+          ) : (
+            <ul className="flex flex-col gap-2">
+              {combustiveis.map((c) => (
+                <li key={c.id} className="flex items-center justify-between rounded-lg border border-borda px-3 py-2">
+                  <span className="text-sm font-medium text-claro">{c.nome}</span>
+                  <button
+                    type="button"
+                    onClick={() => void aoExcluirCombustivel(c)}
+                    className="text-negativo hover:text-negativo/80 p-1"
+                    title="Excluir combustível"
+                  >
+                    <IconeLixeira />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <div className="flex justify-end border-t border-borda pt-4">
+            <button type="button" className="btn btn-suave px-4 py-2 text-sm" onClick={() => setModalCombustiveisAberto(false)}>
+              Fechar
+            </button>
+          </div>
+        </div>
       </Modal>
 
       {/* Modal: Entrada de carga */}
@@ -950,37 +1140,63 @@ export function Combustivel({ usuario, dataSelecionada }: CombustivelProps) {
       <Modal
         aberto={modalBombasAberto}
         aoFechar={() => setModalBombasAberto(false)}
-        titulo={`Bombas: ${selecionado?.nome ?? ''}`}
-        descricao="Os bicos/bombas deste tanque. As leituras de encerrante no fechamento são por bomba."
+        titulo={`Bombas / Bicos: ${selecionado?.nome ?? ''}`}
+        descricao="Cadastre e gerencie os bicos de combustível do tanque. Defina o encerrante inicial do Dia Zero ao adicionar um bico."
         larguraMax="max-w-lg"
       >
         <div className="flex flex-col gap-6">
-          <form onSubmit={aoAdicionarBomba} className="flex gap-2 items-end rounded-xl border border-borda bg-claro/[0.02] p-4">
-            <Campo label="Nome da bomba/bico" obrigatorio>
-              <input className={CLASSE_CAMPO} placeholder="Ex.: Bico 1" value={novaBombaNome} onChange={(e) => setNovaBombaNome(e.target.value)} />
-            </Campo>
-            <button type="submit" disabled={salvando} className="btn btn-primario py-2 px-4 text-sm">
-              {salvando ? '…' : 'Adicionar'}
-            </button>
+          <form onSubmit={aoAdicionarBomba} className="flex flex-col gap-4 rounded-xl border border-borda bg-claro/[0.02] p-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <Campo label="Nome da bomba/bico" obrigatorio>
+                <input className={CLASSE_CAMPO} placeholder="Ex.: Bico 1" value={novaBombaNome} onChange={(e) => setNovaBombaNome(e.target.value)} />
+              </Campo>
+              {!bloquearDiaZero && (
+                <Campo label="Encerrante inicial do Dia Zero (Litros)" dica="Leitura de partida do sistema">
+                  <input className={CLASSE_CAMPO} placeholder="Ex.: 0,00" value={leituraInicial} onChange={(e) => setLeituraInicial(e.target.value)} />
+                </Campo>
+              )}
+            </div>
+            <div className="flex justify-end">
+              <button type="submit" disabled={salvando} className="btn btn-primario py-2 px-4 text-sm">
+                {salvando ? 'Salvando…' : 'Adicionar bico'}
+              </button>
+            </div>
           </form>
           {carregandoBombas ? (
             <div className="text-center text-xs text-suave py-4">Carregando…</div>
           ) : bombas.length === 0 ? (
-            <div className="text-center text-xs text-suave py-4">Nenhuma bomba cadastrada.</div>
+            <div className="text-center text-xs text-suave py-4">Nenhum bico cadastrado.</div>
           ) : (
             <ul className="flex flex-col gap-2">
               {bombas.map((b) => (
                 <li key={b.id} className="flex items-center justify-between rounded-lg border border-borda px-3 py-2">
-                  <span className="text-sm font-medium text-claro">{b.nome}</span>
-                  <button
-                    type="button"
-                    onClick={() => alternarBomba(b)}
-                    className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                      b.ativo ? 'bg-positivo/10 text-positivo' : 'bg-claro/10 text-claro/40'
-                    }`}
-                  >
-                    {b.ativo ? 'Ativa' : 'Inativa'}
-                  </button>
+                  <div className="flex flex-col">
+                    <span className="text-sm font-medium text-claro">{b.nome}</span>
+                    {leiturasIniciais[b.id] !== undefined && (
+                      <span className="text-xs text-suave font-semibold text-ambar">
+                        Encerrante inicial (Dia Zero): {leiturasIniciais[b.id]?.toLocaleString('pt-BR')} L
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => alternarBomba(b)}
+                      className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                        b.ativo ? 'bg-positivo/10 text-positivo' : 'bg-claro/10 text-claro/40'
+                      }`}
+                    >
+                      {b.ativo ? 'Ativa' : 'Inativa'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void aoExcluirBomba(b)}
+                      className="text-negativo hover:text-negativo/80 p-1"
+                      title="Excluir bico"
+                    >
+                      <IconeLixeira />
+                    </button>
+                  </div>
                 </li>
               ))}
             </ul>
@@ -1061,6 +1277,20 @@ export function Combustivel({ usuario, dataSelecionada }: CombustivelProps) {
                   <IconeBomba />
                 </div>
                 <span className="flex-1 text-claro group-hover:text-ambar transition-colors">Gerenciar Bombas</span>
+                <IconeChevronDireita />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  if (selecionado) void aoExcluirTanque(selecionado);
+                }}
+                className="w-full flex items-center gap-3 px-4 py-3 rounded-xl border border-negativo/20 bg-negativo/[0.04] hover:bg-negativo/10 hover:border-negativo/40 transition-all text-left text-sm font-semibold text-negativo group"
+              >
+                <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-negativo/10 text-negativo transition-colors">
+                  <IconeLixeira />
+                </div>
+                <span className="flex-1">Excluir Tanque</span>
                 <IconeChevronDireita />
               </button>
             </>

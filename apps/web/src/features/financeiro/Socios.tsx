@@ -4,6 +4,8 @@ import {
   listarContasCompletas,
   lancarOperacaoSocio,
   listarMovimentos,
+  salvarSocio,
+  removerSocio,
   type Socio,
   type ContaCompleta,
   type MovimentoLista,
@@ -41,7 +43,7 @@ export function Socios({ usuarioId }: { usuarioId: string }) {
   const [de, setDe] = useState('');
   const [ate, setAte] = useState('');
 
-  // Modal + formulário
+  // Modal + formulário (operação)
   const [aberto, setAberto] = useState(false);
   const [socioId, setSocioId] = useState('');
   const [contaId, setContaId] = useState('');
@@ -50,10 +52,74 @@ export function Socios({ usuarioId }: { usuarioId: string }) {
   const [descricao, setDescricao] = useState('');
   const [salvando, setSalvando] = useState(false);
 
+  // Modal de gestão de sócios (cadastro/edição/exclusão)
+  const [gestaoAberta, setGestaoAberta] = useState(false);
+  const [editandoSocioId, setEditandoSocioId] = useState<string | null>(null);
+  const [socioNome, setSocioNome] = useState('');
+  const [socioContato, setSocioContato] = useState('');
+  const [salvandoSocio, setSalvandoSocio] = useState(false);
+
   const tiposSocio = Object.keys(OPERACOES);
 
   async function recarregar() {
     setMovimentos(await listarMovimentos(tiposSocio));
+  }
+
+  async function recarregarSocios() {
+    setSocios(await listarSocios());
+  }
+
+  function limparFormSocio() {
+    setEditandoSocioId(null);
+    setSocioNome('');
+    setSocioContato('');
+  }
+
+  function editarSocio(s: Socio) {
+    setEditandoSocioId(s.id);
+    setSocioNome(s.nome);
+    setSocioContato(s.contato ?? '');
+  }
+
+  async function aoSalvarSocio(e: FormEvent) {
+    e.preventDefault();
+    if (!socioNome.trim()) {
+      toast.erro('Informe o nome do sócio.');
+      return;
+    }
+    setSalvandoSocio(true);
+    try {
+      await salvarSocio({
+        id: editandoSocioId ?? uuidv7(),
+        nome: socioNome.trim(),
+        contato: socioContato.trim() || null,
+      });
+      toast.sucesso(editandoSocioId ? 'Sócio atualizado.' : 'Sócio cadastrado.');
+      limparFormSocio();
+      await recarregarSocios();
+    } catch (e) {
+      console.error(e);
+      toast.erro('Erro ao salvar o sócio.');
+    } finally {
+      setSalvandoSocio(false);
+    }
+  }
+
+  async function aoExcluirSocio(s: Socio) {
+    if (!confirm(`Excluir o sócio "${s.nome}"? Esta ação é definitiva.`)) return;
+    try {
+      await removerSocio(s.id);
+      toast.sucesso('Sócio excluído.');
+      if (editandoSocioId === s.id) limparFormSocio();
+      await recarregarSocios();
+    } catch (e) {
+      console.error(e);
+      toast.erro(
+        (e as Error)?.message === 'NAO_EXCLUIDO'
+          ? 'Este sócio já tem operações lançadas — não pode ser excluído.'
+          : 'Erro ao excluir o sócio.',
+      );
+    }
   }
 
   useEffect(() => {
@@ -166,9 +232,14 @@ export function Socios({ usuarioId }: { usuarioId: string }) {
         titulo="Sócios"
         subtitulo="Aportes, pró-labore e devoluções de empréstimo"
         acao={
-          <button type="button" onClick={() => setAberto(true)} className="btn btn-primario px-4 py-2 text-sm">
-            <IconePlus /> Nova operação
-          </button>
+          <div className="flex gap-2">
+            <button type="button" onClick={() => { limparFormSocio(); setGestaoAberta(true); }} className="btn btn-suave px-4 py-2 text-sm">
+              Gerenciar sócios
+            </button>
+            <button type="button" onClick={() => setAberto(true)} className="btn btn-primario px-4 py-2 text-sm">
+              <IconePlus /> Nova operação
+            </button>
+          </div>
         }
       />
 
@@ -312,6 +383,86 @@ export function Socios({ usuarioId }: { usuarioId: string }) {
             </button>
           </div>
         </form>
+      </Modal>
+
+      {/* Modal: gestão de sócios (cadastro / edição / exclusão) */}
+      <Modal
+        aberto={gestaoAberta}
+        aoFechar={() => setGestaoAberta(false)}
+        titulo="Gerenciar sócios"
+        descricao="Cadastre os sócios do posto. Só dá para excluir um sócio que nunca teve operação."
+        larguraMax="max-w-lg"
+      >
+        <div className="flex flex-col gap-6">
+          <form onSubmit={aoSalvarSocio} className="flex flex-col gap-4 rounded-xl border border-borda bg-claro/[0.02] p-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <Campo label="Nome" obrigatorio>
+                <input
+                  className={CLASSE_CAMPO}
+                  placeholder="Ex.: João Pereira"
+                  value={socioNome}
+                  onChange={(e) => setSocioNome(e.target.value)}
+                />
+              </Campo>
+              <Campo label="Contato">
+                <input
+                  className={CLASSE_CAMPO}
+                  placeholder="Telefone / referência"
+                  value={socioContato}
+                  onChange={(e) => setSocioContato(e.target.value)}
+                />
+              </Campo>
+            </div>
+            <div className="flex justify-end gap-2">
+              {editandoSocioId && (
+                <button type="button" className="btn btn-suave px-4 py-2 text-sm" onClick={limparFormSocio}>
+                  Cancelar edição
+                </button>
+              )}
+              <button type="submit" disabled={salvandoSocio} className="btn btn-primario px-4 py-2 text-sm">
+                {salvandoSocio ? 'Salvando…' : editandoSocioId ? 'Salvar alterações' : 'Adicionar sócio'}
+              </button>
+            </div>
+          </form>
+
+          {socios.length === 0 ? (
+            <div className="text-center text-xs text-suave py-4">Nenhum sócio cadastrado.</div>
+          ) : (
+            <ul className="flex flex-col gap-2">
+              {socios.map((s) => (
+                <li key={s.id} className="flex items-center justify-between rounded-lg border border-borda px-3 py-2">
+                  <span className="text-sm text-claro">
+                    {s.nome}
+                    {s.contato && <span className="ml-2 text-xs text-suave">{s.contato}</span>}
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => editarSocio(s)}
+                      className="rounded-md px-2 py-1 text-xs font-medium text-suave hover:bg-claro/10 hover:text-ambar transition-colors"
+                    >
+                      Editar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void aoExcluirSocio(s)}
+                      title="Excluir (só se nunca usado)"
+                      className="rounded-md px-2 py-1 text-xs font-medium text-negativo hover:bg-negativo/10 transition-colors"
+                    >
+                      Excluir
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <div className="flex justify-end border-t border-borda pt-4">
+            <button type="button" className="btn btn-suave px-4 py-2 text-sm" onClick={() => setGestaoAberta(false)}>
+              Fechar
+            </button>
+          </div>
+        </div>
       </Modal>
     </div>
   );
