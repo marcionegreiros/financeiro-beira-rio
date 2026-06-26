@@ -10,6 +10,7 @@
 //   criar          { id, email, senha, nome, cargo?, permissoes[], contas[] }
 //   redefinir_senha{ usuario_id, senha }
 //   set_ativo      { usuario_id, ativo }
+//   excluir        { usuario_id }  — só se nunca usado; apaga linha + login (Auth)
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 
@@ -169,6 +170,56 @@ Deno.serve(async (req) => {
         acao: 'editar',
         usuario_id: chamador.id,
         dados_depois: { ativo },
+      });
+      return json({ ok: true });
+    }
+
+    // Excluir DE VERDADE — só se o usuário nunca foi usado em nenhum evento.
+    // Se já tem histórico (responsável por fechamento, autor de movimento, vendedor
+    // de venda avulsa, ou aparece na auditoria), recusa e orienta a inativar.
+    if (action === 'excluir') {
+      const { usuario_id } = corpo as { usuario_id: string };
+      if (!usuario_id) return json({ erro: 'Informe usuario_id' }, 400);
+      if (usuario_id === chamador.id) {
+        return json({ erro: 'Você não pode excluir o seu próprio usuário.' }, 400);
+      }
+
+      const { data: alvo } = await admin
+        .from('usuario')
+        .select('auth_uid, nome')
+        .eq('id', usuario_id)
+        .single();
+      if (!alvo) return json({ erro: 'Usuário não encontrado' }, 404);
+
+      // Checagem de uso (NOT EXISTS via count head).
+      const usos = await Promise.all([
+        admin.from('fechamento').select('id', { count: 'exact', head: true }).eq('responsavel_id', usuario_id),
+        admin.from('movimento').select('id', { count: 'exact', head: true }).eq('criado_por', usuario_id),
+        admin.from('venda_avulsa').select('id', { count: 'exact', head: true }).eq('vendedor_id', usuario_id),
+        admin.from('auditoria').select('id', { count: 'exact', head: true }).eq('usuario_id', usuario_id),
+      ]);
+      const totalUsos = usos.reduce((s, r) => s + (r.count ?? 0), 0);
+      if (totalUsos > 0) {
+        return json(
+          { erro: 'Este usuário já tem histórico no sistema e não pode ser excluído. Inative-o.' },
+          409,
+        );
+      }
+
+      // Apaga a linha (cascade leva usuario_permissao e usuario_conta) e o login.
+      const { error: eUsr } = await admin.from('usuario').delete().eq('id', usuario_id);
+      if (eUsr) return json({ erro: eUsr.message }, 400);
+      if (alvo.auth_uid) {
+        await admin.auth.admin.deleteUser(alvo.auth_uid);
+      }
+
+      await admin.from('auditoria').insert({
+        id: crypto.randomUUID(),
+        entidade: 'usuario',
+        entidade_id: usuario_id,
+        acao: 'remover',
+        usuario_id: chamador.id,
+        dados_antes: { nome: alvo.nome },
       });
       return json({ ok: true });
     }

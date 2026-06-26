@@ -6,6 +6,7 @@ import {
   listarContasCompletas,
   listarClientesFiado,
   salvarFiado,
+  removerClienteFiado,
   type FiadoEmAberto,
   type ContaCompleta,
   type ClienteFiado,
@@ -115,6 +116,22 @@ export function Fiado({ usuarioId }: { usuarioId: string }) {
       toast.erro('Erro ao cadastrar o cliente.');
     } finally {
       setSalvandoCliente(false);
+    }
+  }
+
+  async function aoExcluirCliente(c: ClienteFiado) {
+    if (!confirm(`Excluir o cliente "${c.nome}"? Esta ação é definitiva.`)) return;
+    try {
+      await removerClienteFiado(c.id);
+      toast.sucesso('Cliente excluído.');
+      await recarregar();
+    } catch (e) {
+      console.error(e);
+      toast.erro(
+        (e as Error)?.message === 'NAO_EXCLUIDO'
+          ? 'Este cliente já tem fiado lançado — não pode ser excluído.'
+          : 'Erro ao excluir o cliente.',
+      );
     }
   }
 
@@ -282,6 +299,30 @@ export function Fiado({ usuarioId }: { usuarioId: string }) {
             </button>
           </div>
         </form>
+
+        {clientes.length > 0 && (
+          <div className="mt-6 flex flex-col gap-2 border-t border-borda pt-4">
+            <h4 className="text-sm font-bold text-claro">Clientes cadastrados</h4>
+            <ul className="flex flex-col gap-2 max-h-60 overflow-y-auto">
+              {clientes.map((c) => (
+                <li key={c.id} className="flex items-center justify-between rounded-lg border border-borda px-3 py-2">
+                  <span className="text-sm text-claro">
+                    {c.nome}
+                    {c.contato && <span className="ml-2 text-xs text-suave">{c.contato}</span>}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void aoExcluirCliente(c)}
+                    title="Excluir (só se nunca usado)"
+                    className="rounded-md px-2 py-1 text-xs font-medium text-negativo transition-colors hover:bg-negativo/10"
+                  >
+                    Excluir
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </Modal>
 
       {/* Modal: novo fiado */}

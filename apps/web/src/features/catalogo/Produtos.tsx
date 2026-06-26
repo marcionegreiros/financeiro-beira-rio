@@ -1,7 +1,9 @@
 import { useState, useEffect, type FormEvent } from 'react';
-import { 
-  salvarProduto, 
-  listarCategorias, 
+import {
+  salvarProduto,
+  listarCategorias,
+  salvarCategoria,
+  removerCategoria,
   adicionarPrecoProduto,
   adicionarCustoProduto,
   listarPrecosProduto,
@@ -9,17 +11,24 @@ import {
   listarEntradasMercadoriaProduto,
   adicionarEntradaMercadoria,
   obterDadosProdutosNaData,
+  removerPrecoProduto,
+  removerCustoProduto,
+  removerEntradaMercadoria,
+  removerProduto,
+  verificarFechamentoStatus,
   type Categoria,
   type PrecoProdutoHistorico,
   type CustoProdutoHistorico,
   type EntradaMercadoria,
-  type ProdutoNaData
+  type ProdutoNaData,
+  temFechamentoOperacional,
+  definirEstoqueInicialProduto,
+  buscarEstoqueInicialProduto
 } from '../../data/repositorios';
 import { uuidv7 } from '../../lib/uuidv7';
 import { useToast } from '../../components/ui/Toast';
 import { Modal } from '../../components/ui/Modal';
 import { DataTable, type Coluna } from '../../components/ui/DataTable';
-import { PageHeader } from '../../components/ui/PageHeader';
 import { Campo, CLASSE_CAMPO } from '../../components/ui/Campo';
 import { hojeManaus, agoraManausISO, formatarDataBR } from '../../lib/datas';
 import { parseReais, formatReais, asCentavos } from '../../lib/money';
@@ -32,16 +41,15 @@ const MODOS: Record<string, string> = {
 
 interface ProdutosProps {
   usuario?: UsuarioAtual;
+  dataSelecionada: string;
 }
 
-export function Produtos({ usuario }: ProdutosProps) {
+export function Produtos({ usuario, dataSelecionada }: ProdutosProps) {
   const toast = useToast();
   const [produtos, setProdutos] = useState<ProdutoNaData[]>([]);
   const [categorias, setCategorias] = useState<Categoria[]>([]);
   const [carregando, setCarregando] = useState(true);
-
-  // Data Selecionada
-  const [dataSelecionada, setDataSelecionada] = useState(hojeManaus());
+  const [filtroStatus, setFiltroStatus] = useState<'ativos' | 'inativos' | 'todos'>('ativos');
 
   const podeDefinirPrecoCusto = usuario?.permissoes.has('definir_preco_custo') ?? true;
   // Cadastrar/editar produto e dar entrada de estoque exigem `cadastrar_produto`.
@@ -57,6 +65,14 @@ export function Produtos({ usuario }: ProdutosProps) {
   const [modalEstoqueAberto, setModalEstoqueAberto] = useState(false);
   const [modalPrecoAberto, setModalPrecoAberto] = useState(false);
   const [modalCustoAberto, setModalCustoAberto] = useState(false);
+  const [modalAcoesAberto, setModalAcoesAberto] = useState(false);
+  const [modalCategoriasAberto, setModalCategoriasAberto] = useState(false);
+
+  // Gestão de categorias de produto
+  const [catEditandoId, setCatEditandoId] = useState<string | null>(null);
+  const [catNome, setCatNome] = useState('');
+  const [catOrdem, setCatOrdem] = useState(10);
+  const [salvandoCategoria, setSalvandoCategoria] = useState(false);
 
   // Estados dos formulários:
   // 1. Dados gerais (Novo / Editar)
@@ -68,6 +84,8 @@ export function Produtos({ usuario }: ProdutosProps) {
   const [alertaMuitoBaixo, setAlertaMuitoBaixo] = useState('');
   const [ativo, setAtivo] = useState(true);
   const [salvando, setSalvando] = useState(false);
+  const [estoqueInicial, setEstoqueInicial] = useState('');
+  const [bloquearDiaZero, setBloquearDiaZero] = useState(false);
 
   // 2. Entrada de Estoque
   const [entradaQtdStr, setEntradaQtdStr] = useState('');
@@ -119,6 +137,7 @@ export function Produtos({ usuario }: ProdutosProps) {
 
   useEffect(() => {
     void carregarCategorias();
+    temFechamentoOperacional().then(setBloquearDiaZero).catch(console.error);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -127,22 +146,8 @@ export function Produtos({ usuario }: ProdutosProps) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dataSelecionada]);
 
-  // Navegação de dias
-  function diaAnterior() {
-    const d = new Date(dataSelecionada + 'T12:00:00');
-    d.setDate(d.getDate() - 1);
-    const pad = (n: number) => String(n).padStart(2, '0');
-    setDataSelecionada(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`);
-  }
 
-  function diaSeguinte() {
-    const d = new Date(dataSelecionada + 'T12:00:00');
-    d.setDate(d.getDate() + 1);
-    const pad = (n: number) => String(n).padStart(2, '0');
-    setDataSelecionada(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`);
-  }
 
-  // Abertura de Modais
   function abrirNovo() {
     setNome('');
     setCategoriaId(categorias[0]?.id ?? '');
@@ -152,6 +157,7 @@ export function Produtos({ usuario }: ProdutosProps) {
     setAlertaBaixo('');
     setAlertaMuitoBaixo('');
     setAtivo(true);
+    setEstoqueInicial('');
     setModalNovoAberto(true);
   }
 
@@ -164,6 +170,16 @@ export function Produtos({ usuario }: ProdutosProps) {
     setAlertaBaixo(p.alertaBaixo != null ? String(p.alertaBaixo) : '');
     setAlertaMuitoBaixo(p.alertaMuitoBaixo != null ? String(p.alertaMuitoBaixo) : '');
     setAtivo(p.ativo);
+    setEstoqueInicial('');
+
+    if (p.modoApuracao === 'contagem') {
+      buscarEstoqueInicialProduto(p.id)
+        .then((val) => {
+          if (val !== null) setEstoqueInicial(String(val).replace('.', ','));
+        })
+        .catch(console.error);
+    }
+
     setModalEditarAberto(true);
   }
 
@@ -233,6 +249,11 @@ export function Produtos({ usuario }: ProdutosProps) {
     }
   }
 
+  function abrirAcoes(p: ProdutoNaData) {
+    setSelecionado(p);
+    setModalAcoesAberto(true);
+  }
+
   // Manipuladores de Salvamento/Registro
   async function aoSalvarNovo(e: FormEvent) {
     e.preventDefault();
@@ -258,6 +279,14 @@ export function Produtos({ usuario }: ProdutosProps) {
         ativo,
       };
       await salvarProduto(prod);
+
+      if (modoApuracao === 'contagem' && !bloquearDiaZero && estoqueInicial.trim() !== '') {
+        const qtd = Number(estoqueInicial.replace(',', '.'));
+        if (!isNaN(qtd)) {
+          await definirEstoqueInicialProduto(prod.id, qtd);
+        }
+      }
+
       toast.sucesso('Produto cadastrado com sucesso.');
       setModalNovoAberto(false);
       await carregarProdutos();
@@ -294,6 +323,14 @@ export function Produtos({ usuario }: ProdutosProps) {
         ativo,
       };
       await salvarProduto(prod);
+
+      if (modoApuracao === 'contagem' && !bloquearDiaZero && estoqueInicial.trim() !== '') {
+        const qtd = Number(estoqueInicial.replace(',', '.'));
+        if (!isNaN(qtd)) {
+          await definirEstoqueInicialProduto(prod.id, qtd);
+        }
+      }
+
       toast.sucesso('Produto atualizado com sucesso.');
       setModalEditarAberto(false);
       await carregarProdutos();
@@ -401,6 +438,173 @@ export function Produtos({ usuario }: ProdutosProps) {
     }
   }
 
+  async function aoExcluirEntrada(e: EntradaMercadoria) {
+    try {
+      const status = await verificarFechamentoStatus(e.data);
+      if (status === 'travado') {
+        const podeExcluirRetroativo = usuario?.permissoes.has('editar_lancamentos_retroativos') ?? false;
+        if (!podeExcluirRetroativo) {
+          toast.erro('Esta entrada não pode ser excluída porque o caixa do dia ' + formatarDataBR(e.data) + ' já está encerrado. Solicite a um gerente.');
+          return;
+        }
+        if (!confirm('O caixa do dia ' + formatarDataBR(e.data) + ' já foi encerrado. Como gerente, deseja prosseguir com a exclusão desta entrada de estoque? Isso recalculará a cascata dos saldos.')) {
+          return;
+        }
+      } else {
+        if (!confirm('Deseja realmente excluir esta entrada de estoque?')) {
+          return;
+        }
+      }
+
+      await removerEntradaMercadoria(e.id);
+      toast.sucesso('Entrada de mercadoria excluída.');
+      
+      if (selecionado) {
+        setEntradasHistorico(await listarEntradasMercadoriaProduto(selecionado.id));
+      }
+      await carregarProdutos();
+    } catch (err) {
+      console.error(err);
+      toast.erro('Erro ao excluir entrada de mercadoria.');
+    }
+  }
+
+  async function aoExcluirPreco(p: PrecoProdutoHistorico) {
+    try {
+      const status = await verificarFechamentoStatus(p.validoAPartirDe);
+      if (status === 'travado') {
+        const podeExcluirRetroativo = usuario?.permissoes.has('editar_lancamentos_retroativos') ?? false;
+        if (!podeExcluirRetroativo) {
+          toast.erro('Este preço não pode ser excluído porque o caixa do dia ' + formatarDataBR(p.validoAPartirDe) + ' já está encerrado. Solicite a um gerente.');
+          return;
+        }
+        if (!confirm('O caixa do dia ' + formatarDataBR(p.validoAPartirDe) + ' já foi encerrado. Como gerente, deseja prosseguir com a exclusão do histórico de preço? Isso pode impactar relatórios retroativos.')) {
+          return;
+        }
+      } else {
+        if (!confirm('Deseja realmente excluir esta alteração de preço?')) {
+          return;
+        }
+      }
+
+      await removerPrecoProduto(p.id);
+      toast.sucesso('Alteração de preço excluída.');
+
+      if (selecionado) {
+        setPrecosHistorico(await listarPrecosProduto(selecionado.id));
+      }
+      await carregarProdutos();
+    } catch (err) {
+      console.error(err);
+      toast.erro('Erro ao excluir preço.');
+    }
+  }
+
+  async function aoExcluirCusto(c: CustoProdutoHistorico) {
+    try {
+      const dataItem = c.validoAPartirDe.split('T')[0]!;
+      const status = await verificarFechamentoStatus(dataItem);
+      if (status === 'travado') {
+        const podeExcluirRetroativo = usuario?.permissoes.has('editar_lancamentos_retroativos') ?? false;
+        if (!podeExcluirRetroativo) {
+          toast.erro('Este custo não pode ser excluído porque o caixa do dia ' + formatarDataBR(dataItem) + ' já está encerrado. Solicite a um gerente.');
+          return;
+        }
+        if (!confirm('O caixa do dia ' + formatarDataBR(dataItem) + ' já foi encerrado. Como gerente, deseja prosseguir com a exclusão do histórico de custo? Isso pode impactar relatórios retroativos.')) {
+          return;
+        }
+      } else {
+        if (!confirm('Deseja realmente excluir esta alteração de custo?')) {
+          return;
+        }
+      }
+
+      await removerCustoProduto(c.id);
+      toast.sucesso('Alteração de custo excluída.');
+
+      if (selecionado) {
+        setCustosHistorico(await listarCustosProduto(selecionado.id));
+      }
+      await carregarProdutos();
+    } catch (err) {
+      console.error(err);
+      toast.erro('Erro ao excluir custo.');
+    }
+  }
+
+  // ---- Gestão de categorias de produto ----
+  function limparFormCategoria() {
+    setCatEditandoId(null);
+    setCatNome('');
+    const prox = categorias.length > 0 ? Math.max(...categorias.map((c) => c.ordem)) + 10 : 10;
+    setCatOrdem(prox);
+  }
+
+  function abrirCategorias() {
+    limparFormCategoria();
+    setModalCategoriasAberto(true);
+  }
+
+  function editarCategoria(c: Categoria) {
+    setCatEditandoId(c.id);
+    setCatNome(c.nome);
+    setCatOrdem(c.ordem);
+  }
+
+  async function aoSalvarCategoria(e: FormEvent) {
+    e.preventDefault();
+    if (!catNome.trim()) {
+      toast.erro('Informe o nome da categoria.');
+      return;
+    }
+    setSalvandoCategoria(true);
+    try {
+      await salvarCategoria({ id: catEditandoId ?? uuidv7(), nome: catNome.trim(), ordem: catOrdem });
+      toast.sucesso(catEditandoId ? 'Categoria atualizada.' : 'Categoria cadastrada.');
+      await carregarCategorias();
+      limparFormCategoria();
+    } catch (err) {
+      console.error(err);
+      toast.erro('Erro ao salvar a categoria.');
+    } finally {
+      setSalvandoCategoria(false);
+    }
+  }
+
+  async function aoExcluirCategoria(c: Categoria) {
+    if (!confirm(`Excluir a categoria "${c.nome}"? Esta ação é definitiva.`)) return;
+    try {
+      await removerCategoria(c.id);
+      toast.sucesso('Categoria excluída.');
+      if (catEditandoId === c.id) limparFormCategoria();
+      await carregarCategorias();
+    } catch (err) {
+      console.error(err);
+      toast.erro(
+        (err as Error)?.message === 'NAO_EXCLUIDO'
+          ? 'Esta categoria tem produtos vinculados — mova/remova os produtos antes.'
+          : 'Erro ao excluir a categoria.',
+      );
+    }
+  }
+
+  async function aoExcluirProduto(p: ProdutoNaData) {
+    if (!confirm(`Excluir o produto "${p.nome}"? Esta ação é definitiva.`)) return;
+    try {
+      await removerProduto(p.id);
+      toast.sucesso('Produto excluído.');
+      setModalAcoesAberto(false);
+      await carregarProdutos();
+    } catch (err) {
+      console.error(err);
+      toast.erro(
+        (err as Error)?.message === 'NAO_EXCLUIDO'
+          ? 'Este produto já foi usado (contagem, entrada, perda ou venda) — apenas inative-o.'
+          : 'Erro ao excluir produto.',
+      );
+    }
+  }
+
   const colunas: Coluna<ProdutoNaData>[] = [
     {
       chave: 'ordem',
@@ -456,11 +660,7 @@ export function Produtos({ usuario }: ProdutosProps) {
         </span>
       ),
     },
-    {
-      chave: 'modo',
-      titulo: 'Apuração',
-      render: (p) => <span className="text-suave">{MODOS[p.modoApuracao] ?? p.modoApuracao}</span>,
-    },
+
     {
       chave: 'status',
       titulo: 'Status',
@@ -479,106 +679,54 @@ export function Produtos({ usuario }: ProdutosProps) {
       titulo: 'Ações',
       alinhar: 'right',
       render: (p) => (
-        <div className="flex gap-1 justify-end flex-wrap max-w-xs">
-          {podeCadastrar && (
-            <>
-              <button
-                type="button"
-                onClick={() => abrirEditar(p)}
-                className="rounded px-2 py-1 text-[11px] font-semibold text-suave bg-claro/5 transition-all hover:bg-ambar hover:text-sobreacento"
-                title="Editar dados gerais"
-              >
-                Editar
-              </button>
-              <button
-                type="button"
-                onClick={() => abrirEstoque(p)}
-                className="rounded px-2 py-1 text-[11px] font-semibold text-positivo bg-positivo/5 transition-all hover:bg-positivo hover:text-sobreacento"
-                title="Entrada de estoque de produtos"
-              >
-                + Estoque
-              </button>
-            </>
-          )}
-          {podeDefinirPrecoCusto && (
-            <>
-              <button
-                type="button"
-                onClick={() => abrirPreco(p)}
-                className="rounded px-2 py-1 text-[11px] font-semibold text-cyan-400 bg-cyan-400/5 transition-all hover:bg-cyan-400 hover:text-black"
-                title="Preço de venda"
-              >
-                Preço
-              </button>
-              <button
-                type="button"
-                onClick={() => abrirCusto(p)}
-                className="rounded px-2 py-1 text-[11px] font-semibold text-ambar bg-ambar/5 transition-all hover:bg-ambar hover:text-sobreacento"
-                title="Custo unitário"
-              >
-                Custo
-              </button>
-            </>
-          )}
-        </div>
+        <button
+          type="button"
+          onClick={() => abrirAcoes(p)}
+          className="rounded-lg p-2 text-suave bg-claro/5 hover:bg-ambar hover:text-sobreacento transition-all"
+          title="Ações do produto"
+        >
+          <IconeEditar />
+        </button>
       ),
     },
   ];
 
+  const produtosFiltrados = produtos.filter((p) => {
+    if (filtroStatus === 'ativos') return p.ativo;
+    if (filtroStatus === 'inativos') return !p.ativo;
+    return true;
+  });
+
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader
-        titulo="Produtos"
-        subtitulo="Catálogo de mercadorias e configurações de estoque"
-        acao={
-          podeCadastrar ? (
+      <div className="flex items-center justify-between gap-4 flex-wrap pb-2 border-b border-borda/40">
+        <div className="flex items-center gap-4 flex-wrap">
+          <h2 className="text-lg font-bold text-claro">Mercadorias & Produtos</h2>
+          <select
+            value={filtroStatus}
+            onChange={(e) => setFiltroStatus(e.target.value as any)}
+            className="rounded border border-borda bg-transparent px-2 py-1 text-xs text-suave focus:ring-ambar focus:border-ambar outline-none"
+          >
+            <option value="ativos" className="bg-ardosia">Apenas Ativos</option>
+            <option value="inativos" className="bg-ardosia">Apenas Inativos</option>
+            <option value="todos" className="bg-ardosia">Todos</option>
+          </select>
+        </div>
+        {podeCadastrar && (
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={abrirCategorias} className="btn btn-suave px-4 py-2 text-sm">
+              Categorias
+            </button>
             <button type="button" onClick={abrirNovo} className="btn btn-primario px-4 py-2 text-sm">
               <IconePlus /> Novo produto
             </button>
-          ) : undefined
-        }
-      />
-
-      {/* Seletor de Data */}
-      <div className="flex flex-col gap-2 p-4 rounded-2xl border border-borda bg-ardosia shadow-sm max-w-lg sm:flex-row sm:items-center sm:gap-4 sm:justify-between animate-fadeIn">
-        <span className="text-sm font-semibold text-suave">Visualizar estoque/preços na data:</span>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={diaAnterior}
-            className="rounded-lg p-2 text-claro border border-borda hover:bg-claro/5 transition-all active:scale-95"
-            title="Dia anterior"
-          >
-            <IconeAnterior />
-          </button>
-          <input
-            type="date"
-            aria-label="Data selecionada"
-            className="rounded-lg border border-borda bg-transparent px-3 py-1.5 text-sm font-bold text-claro text-center focus:ring-ambar focus:border-ambar outline-none transition-all"
-            value={dataSelecionada}
-            onChange={(e) => e.target.value && setDataSelecionada(e.target.value)}
-          />
-          <button
-            type="button"
-            onClick={diaSeguinte}
-            className="rounded-lg p-2 text-claro border border-borda hover:bg-claro/5 transition-all active:scale-95"
-            title="Próximo dia"
-          >
-            <IconeProximo />
-          </button>
-          <button
-            type="button"
-            onClick={() => setDataSelecionada(hojeManaus())}
-            className="rounded-lg border border-borda bg-claro/5 px-3 py-1.5 text-xs font-semibold text-claro hover:bg-claro/10 transition-colors"
-          >
-            Hoje
-          </button>
-        </div>
+          </div>
+        )}
       </div>
 
       <DataTable
         colunas={colunas}
-        dados={produtos}
+        dados={produtosFiltrados}
         chaveLinha={(p) => p.id}
         carregando={carregando}
         vazio={`Nenhum produto cadastrado para a data ${formatarDataBR(dataSelecionada)}.`}
@@ -655,6 +803,17 @@ export function Produtos({ usuario }: ProdutosProps) {
                 onChange={(e) => setAlertaMuitoBaixo(e.target.value)}
               />
             </Campo>
+            {modoApuracao === 'contagem' && !bloquearDiaZero && (
+              <Campo label="Estoque inicial (Dia Zero)" dica="Apenas para iniciar o sistema">
+                <input
+                  type="text"
+                  className={`${CLASSE_CAMPO} numeros text-right`}
+                  placeholder="Ex.: 0,00"
+                  value={estoqueInicial}
+                  onChange={(e) => setEstoqueInicial(e.target.value)}
+                />
+              </Campo>
+            )}
           </div>
 
           <label className="flex items-center gap-2 text-sm text-claro mt-2">
@@ -749,6 +908,21 @@ export function Produtos({ usuario }: ProdutosProps) {
                 onChange={(e) => setAlertaMuitoBaixo(e.target.value)}
               />
             </Campo>
+            {modoApuracao === 'contagem' && (
+              <Campo 
+                label={bloquearDiaZero ? "Estoque inicial (Dia Zero) [Bloqueado]" : "Estoque inicial (Dia Zero)"} 
+                dica={bloquearDiaZero ? "Bloqueado pois já existem fechamentos posteriores" : "Estoque de partida do sistema"}
+              >
+                <input
+                  type="text"
+                  className={`${CLASSE_CAMPO} numeros text-right ${bloquearDiaZero ? 'bg-claro/5 cursor-not-allowed text-suave' : ''}`}
+                  placeholder="Ex.: 0,00"
+                  disabled={bloquearDiaZero}
+                  value={estoqueInicial}
+                  onChange={(e) => setEstoqueInicial(e.target.value)}
+                />
+              </Campo>
+            )}
           </div>
 
           <label className="flex items-center gap-2 text-sm text-claro mt-2">
@@ -829,10 +1003,11 @@ export function Produtos({ usuario }: ProdutosProps) {
                   <thead className="bg-claro/[0.02] text-suave border-b border-borda sticky top-0 z-10">
                     <tr>
                       <th className="p-3 w-[25%] font-semibold">Data</th>
-                      <th className="p-3 w-[20%] text-right font-semibold">Qtd</th>
+                      <th className="p-3 w-[15%] text-right font-semibold">Qtd</th>
                       <th className="p-3 w-[20%] text-right font-semibold">Unitário</th>
                       <th className="p-3 w-[20%] text-right font-semibold">Total</th>
                       <th className="p-3 w-[15%] text-right font-semibold">Tipo</th>
+                      <th className="p-3 w-[5%] text-right font-semibold"></th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-borda">
@@ -853,6 +1028,18 @@ export function Produtos({ usuario }: ProdutosProps) {
                               <span className="inline-flex rounded-full bg-claro/5 px-2 py-0.5 text-[10px] font-semibold text-suave">
                                 Avulsa
                               </span>
+                            )}
+                          </td>
+                          <td className="p-3 text-right">
+                            {podeCadastrar && (
+                              <button
+                                type="button"
+                                onClick={() => void aoExcluirEntrada(e)}
+                                className="text-negativo hover:text-negativo/80 p-1"
+                                title="Excluir entrada"
+                              >
+                                <IconeLixeira />
+                              </button>
                             )}
                           </td>
                         </tr>
@@ -924,8 +1111,9 @@ export function Produtos({ usuario }: ProdutosProps) {
                   <thead className="bg-claro/[0.02] text-suave border-b border-borda sticky top-0 z-10">
                     <tr>
                       <th className="p-3 w-[45%] font-semibold">Início da Vigência</th>
-                      <th className="p-3 w-[30%] font-semibold">Valor</th>
-                      <th className="p-3 w-[25%] text-right font-semibold">Situação</th>
+                      <th className="p-3 w-[25%] font-semibold">Valor</th>
+                      <th className="p-3 w-[20%] text-right font-semibold">Situação</th>
+                      <th className="p-3 w-[10%] text-right font-semibold"></th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-borda">
@@ -947,6 +1135,18 @@ export function Produtos({ usuario }: ProdutosProps) {
                             <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ${situacao.classe}`}>
                               {situacao.label}
                             </span>
+                          </td>
+                          <td className="p-3 text-right">
+                            {podeDefinirPrecoCusto && (
+                              <button
+                                type="button"
+                                onClick={() => void aoExcluirPreco(p)}
+                                className="text-negativo hover:text-negativo/80 p-1"
+                                title="Excluir preço"
+                              >
+                                <IconeLixeira />
+                              </button>
+                            )}
                           </td>
                         </tr>
                       );
@@ -1025,8 +1225,9 @@ export function Produtos({ usuario }: ProdutosProps) {
                   <thead className="bg-claro/[0.02] text-suave border-b border-borda sticky top-0 z-10">
                     <tr>
                       <th className="p-3 w-[45%] font-semibold">Início da Vigência</th>
-                      <th className="p-3 w-[30%] font-semibold">Custo Unitário</th>
-                      <th className="p-3 w-[25%] text-right font-semibold">Situação</th>
+                      <th className="p-3 w-[25%] font-semibold">Custo Unitário</th>
+                      <th className="p-3 w-[20%] text-right font-semibold">Situação</th>
+                      <th className="p-3 w-[10%] text-right font-semibold"></th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-borda">
@@ -1054,6 +1255,18 @@ export function Produtos({ usuario }: ProdutosProps) {
                               {situacao.label}
                             </span>
                           </td>
+                          <td className="p-3 text-right">
+                            {podeDefinirPrecoCusto && (
+                              <button
+                                type="button"
+                                onClick={() => void aoExcluirCusto(c)}
+                                className="text-negativo hover:text-negativo/80 p-1"
+                                title="Excluir custo"
+                              >
+                                <IconeLixeira />
+                              </button>
+                            )}
+                          </td>
                         </tr>
                       );
                     })}
@@ -1064,6 +1277,184 @@ export function Produtos({ usuario }: ProdutosProps) {
           </div>
           <div className="flex justify-end border-t border-borda pt-4">
             <button type="button" className="btn btn-suave px-4 py-2 text-sm" onClick={() => setModalCustoAberto(false)}>
+              Fechar
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Modal de Ações Gerais */}
+      <Modal
+        aberto={modalAcoesAberto}
+        aoFechar={() => setModalAcoesAberto(false)}
+        titulo={`Ações do Produto`}
+        descricao={`Selecione a operação para o produto ${selecionado?.nome ?? ''}:`}
+        larguraMax="max-w-sm"
+      >
+        <div className="flex flex-col gap-2 py-1">
+          {podeCadastrar && (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  setModalAcoesAberto(false);
+                  if (selecionado) abrirEditar(selecionado);
+                }}
+                className="w-full flex items-center gap-3 px-4 py-3 rounded-xl border border-borda bg-claro/[0.02] hover:bg-ambar/10 hover:border-ambar/40 transition-all text-left text-sm font-semibold text-claro group"
+              >
+                <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-claro/5 text-suave group-hover:bg-ambar/20 group-hover:text-ambar transition-colors">
+                  <IconeEditar />
+                </div>
+                <span className="flex-1 text-claro group-hover:text-ambar transition-colors">Editar Cadastro</span>
+                <IconeChevronDireita />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setModalAcoesAberto(false);
+                  if (selecionado) void abrirEstoque(selecionado);
+                }}
+                className="w-full flex items-center gap-3 px-4 py-3 rounded-xl border border-borda bg-claro/[0.02] hover:bg-ambar/10 hover:border-ambar/40 transition-all text-left text-sm font-semibold text-claro group"
+              >
+                <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-claro/5 text-suave group-hover:bg-ambar/20 group-hover:text-ambar transition-colors">
+                  <IconeEstoque />
+                </div>
+                <span className="flex-1 text-claro group-hover:text-ambar transition-colors">Entrada de Estoque</span>
+                <IconeChevronDireita />
+              </button>
+            </>
+          )}
+
+          {podeDefinirPrecoCusto && (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  setModalAcoesAberto(false);
+                  if (selecionado) void abrirPreco(selecionado);
+                }}
+                className="w-full flex items-center gap-3 px-4 py-3 rounded-xl border border-borda bg-claro/[0.02] hover:bg-ambar/10 hover:border-ambar/40 transition-all text-left text-sm font-semibold text-claro group"
+              >
+                <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-claro/5 text-suave group-hover:bg-ambar/20 group-hover:text-ambar transition-colors">
+                  <IconePreco />
+                </div>
+                <span className="flex-1 text-claro group-hover:text-ambar transition-colors">Alterar Preço</span>
+                <IconeChevronDireita />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setModalAcoesAberto(false);
+                  if (selecionado) void abrirCusto(selecionado);
+                }}
+                className="w-full flex items-center gap-3 px-4 py-3 rounded-xl border border-borda bg-claro/[0.02] hover:bg-ambar/10 hover:border-ambar/40 transition-all text-left text-sm font-semibold text-claro group"
+              >
+                <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-claro/5 text-suave group-hover:bg-ambar/20 group-hover:text-ambar transition-colors">
+                  <IconeCusto />
+                </div>
+                <span className="flex-1 text-claro group-hover:text-ambar transition-colors">Alterar Custo</span>
+                <IconeChevronDireita />
+              </button>
+            </>
+          )}
+
+          {podeCadastrar && (
+            <button
+              type="button"
+              onClick={() => {
+                if (selecionado) void aoExcluirProduto(selecionado);
+              }}
+              className="w-full flex items-center gap-3 px-4 py-3 rounded-xl border border-negativo/20 bg-negativo/[0.04] hover:bg-negativo/10 hover:border-negativo/40 transition-all text-left text-sm font-semibold text-negativo group"
+            >
+              <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-negativo/10 text-negativo">
+                <IconeLixeira />
+              </div>
+              <span className="flex-1">Excluir Produto</span>
+              <IconeChevronDireita />
+            </button>
+          )}
+        </div>
+      </Modal>
+
+      {/* Modal: gestão de categorias de produto */}
+      <Modal
+        aberto={modalCategoriasAberto}
+        aoFechar={() => setModalCategoriasAberto(false)}
+        titulo="Categorias de produto"
+        descricao="Agrupam os produtos e definem a ordem no fechamento. Só dá para excluir uma categoria sem produtos."
+        larguraMax="max-w-lg"
+      >
+        <div className="flex flex-col gap-6">
+          <form onSubmit={aoSalvarCategoria} className="flex flex-col gap-4 rounded-xl border border-borda bg-claro/[0.02] p-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              <div className="sm:col-span-2">
+                <Campo label="Nome" obrigatorio>
+                  <input
+                    className={CLASSE_CAMPO}
+                    placeholder="Ex.: Bebidas, Conveniência"
+                    value={catNome}
+                    onChange={(e) => setCatNome(e.target.value)}
+                  />
+                </Campo>
+              </div>
+              <Campo label="Ordem">
+                <input
+                  type="number"
+                  aria-label="Ordem da categoria"
+                  className={`${CLASSE_CAMPO} numeros text-right`}
+                  value={catOrdem}
+                  onChange={(e) => setCatOrdem(Number(e.target.value))}
+                />
+              </Campo>
+            </div>
+            <div className="flex justify-end gap-2">
+              {catEditandoId && (
+                <button type="button" className="btn btn-suave px-4 py-2 text-sm" onClick={limparFormCategoria}>
+                  Cancelar edição
+                </button>
+              )}
+              <button type="submit" disabled={salvandoCategoria} className="btn btn-primario px-4 py-2 text-sm">
+                {salvandoCategoria ? 'Salvando…' : catEditandoId ? 'Salvar alterações' : 'Adicionar categoria'}
+              </button>
+            </div>
+          </form>
+
+          {categorias.length === 0 ? (
+            <div className="text-center text-xs text-suave py-4">Nenhuma categoria cadastrada.</div>
+          ) : (
+            <ul className="flex flex-col gap-2">
+              {[...categorias].sort((a, b) => a.ordem - b.ordem).map((c) => (
+                <li key={c.id} className="flex items-center justify-between rounded-lg border border-borda px-3 py-2">
+                  <span className="text-sm text-claro">
+                    <span className="numeros text-xs text-suave mr-2">{c.ordem}</span>
+                    {c.nome}
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => editarCategoria(c)}
+                      className="rounded-md px-2 py-1 text-xs font-medium text-suave hover:bg-claro/10 hover:text-ambar transition-colors"
+                    >
+                      Editar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void aoExcluirCategoria(c)}
+                      title="Excluir (só se sem produtos)"
+                      className="rounded-md px-2 py-1 text-xs font-medium text-negativo hover:bg-negativo/10 transition-colors"
+                    >
+                      Excluir
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <div className="flex justify-end border-t border-borda pt-4">
+            <button type="button" className="btn btn-suave px-4 py-2 text-sm" onClick={() => setModalCategoriasAberto(false)}>
               Fechar
             </button>
           </div>
@@ -1081,18 +1472,52 @@ function IconePlus() {
   );
 }
 
-function IconeAnterior() {
+
+
+function IconeEditar() {
   return (
-    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
     </svg>
   );
 }
 
-function IconeProximo() {
+function IconeEstoque() {
   return (
-    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+    </svg>
+  );
+}
+
+function IconePreco() {
+  return (
+    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M7 7h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+    </svg>
+  );
+}
+
+function IconeCusto() {
+  return (
+    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+    </svg>
+  );
+}
+
+function IconeChevronDireita() {
+  return (
+    <svg className="h-4 w-4 text-suave group-hover:text-ambar group-hover:translate-x-0.5 transition-all duration-200" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+    </svg>
+  );
+}
+
+function IconeLixeira() {
+  return (
+    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
     </svg>
   );
 }

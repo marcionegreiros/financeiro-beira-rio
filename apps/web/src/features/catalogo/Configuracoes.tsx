@@ -1,5 +1,13 @@
 import { useState, useEffect, type FormEvent } from 'react';
-import { lerConfig, salvarConfig } from '../../data/repositorios';
+import {
+  lerConfig,
+  salvarConfig,
+  listarCategoriasDespesa,
+  salvarCategoriaDespesa,
+  removerCategoriaDespesa,
+  type CategoriaDespesa,
+} from '../../data/repositorios';
+import { uuidv7 } from '../../lib/uuidv7';
 import { useToast } from '../../components/ui/Toast';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { Campo, CLASSE_CAMPO } from '../../components/ui/Campo';
@@ -66,6 +74,64 @@ export function Configuracoes({ tema, aoTrocarTema }: Props) {
   const [carregando, setCarregando] = useState(true);
   const [salvando, setSalvando] = useState(false);
 
+  // Categorias de despesa (CRUD)
+  const [categoriasDespesa, setCategoriasDespesa] = useState<CategoriaDespesa[]>([]);
+  const [cdEditandoId, setCdEditandoId] = useState<string | null>(null);
+  const [cdNome, setCdNome] = useState('');
+  const [salvandoCd, setSalvandoCd] = useState(false);
+
+  async function recarregarCategoriasDespesa() {
+    setCategoriasDespesa(await listarCategoriasDespesa());
+  }
+
+  function limparFormCd() {
+    setCdEditandoId(null);
+    setCdNome('');
+  }
+
+  function editarCd(c: CategoriaDespesa) {
+    setCdEditandoId(c.id);
+    setCdNome(c.nome);
+  }
+
+  async function aoSalvarCd(e: FormEvent) {
+    e.preventDefault();
+    if (!cdNome.trim()) {
+      toast.erro('Informe o nome da categoria.');
+      return;
+    }
+    setSalvandoCd(true);
+    try {
+      const ehEspecial = categoriasDespesa.find((c) => c.id === cdEditandoId)?.ehEspecial ?? false;
+      await salvarCategoriaDespesa({ id: cdEditandoId ?? uuidv7(), nome: cdNome.trim(), ehEspecial });
+      toast.sucesso(cdEditandoId ? 'Categoria atualizada.' : 'Categoria cadastrada.');
+      await recarregarCategoriasDespesa();
+      limparFormCd();
+    } catch (err) {
+      console.error(err);
+      toast.erro('Erro ao salvar a categoria de despesa.');
+    } finally {
+      setSalvandoCd(false);
+    }
+  }
+
+  async function aoExcluirCd(c: CategoriaDespesa) {
+    if (!confirm(`Excluir a categoria de despesa "${c.nome}"? Esta ação é definitiva.`)) return;
+    try {
+      await removerCategoriaDespesa(c.id);
+      toast.sucesso('Categoria excluída.');
+      if (cdEditandoId === c.id) limparFormCd();
+      await recarregarCategoriasDespesa();
+    } catch (err) {
+      console.error(err);
+      toast.erro(
+        (err as Error)?.message === 'NAO_EXCLUIDO'
+          ? 'Esta categoria já foi usada em alguma despesa — não pode ser excluída.'
+          : 'Erro ao excluir a categoria.',
+      );
+    }
+  }
+
   useEffect(() => {
     async function carregar() {
       try {
@@ -83,6 +149,7 @@ export function Configuracoes({ tema, aoTrocarTema }: Props) {
         if (credPct !== null) setTaxaCreditoPct(String(credPct));
         if (credFixa !== null) setTaxaCreditoFixa(String(Number(credFixa) / 100));
         if (avulsos !== null) setMostrarAvulsos(Boolean(avulsos));
+        setCategoriasDespesa(await listarCategoriasDespesa());
       } catch (err) {
         console.error('Erro ao carregar configs', err);
         toast.erro('Falha ao carregar configurações.');
@@ -288,6 +355,75 @@ export function Configuracoes({ tema, aoTrocarTema }: Props) {
           </button>
         </div>
       </form>
+
+      {/* Seção: Categorias de despesa (CRUD próprio, salva na hora) */}
+      <section className="cartao p-5">
+        <h2 className="mb-4 flex items-center gap-2 text-base font-bold text-claro">
+          <IconeCategoria />
+          Categorias de Despesa
+        </h2>
+        <p className="mb-4 text-sm text-suave">
+          Organizam as despesas lançadas (aluguel, energia, manutenção…). Só é possível excluir
+          uma categoria que nunca foi usada em uma despesa.
+        </p>
+
+        <form onSubmit={aoSalvarCd} className="mb-4 flex items-end gap-2">
+          <div className="max-w-xs flex-1">
+            <Campo label={cdEditandoId ? 'Editar categoria' : 'Nova categoria'} obrigatorio>
+              <input
+                className={CLASSE_CAMPO}
+                placeholder="Ex.: Energia, Aluguel, Manutenção"
+                value={cdNome}
+                onChange={(e) => setCdNome(e.target.value)}
+              />
+            </Campo>
+          </div>
+          {cdEditandoId && (
+            <button type="button" className="btn btn-suave px-4 py-2 text-sm" onClick={limparFormCd}>
+              Cancelar
+            </button>
+          )}
+          <button type="submit" disabled={salvandoCd} className="btn btn-primario px-4 py-2 text-sm">
+            {salvandoCd ? 'Salvando…' : cdEditandoId ? 'Salvar' : 'Adicionar'}
+          </button>
+        </form>
+
+        {categoriasDespesa.length === 0 ? (
+          <p className="text-xs text-suave">Nenhuma categoria de despesa cadastrada.</p>
+        ) : (
+          <ul className="flex flex-col gap-2">
+            {categoriasDespesa.map((c) => (
+              <li key={c.id} className="flex items-center justify-between rounded-lg border border-borda px-3 py-2">
+                <span className="text-sm text-claro">
+                  {c.nome}
+                  {c.ehEspecial && (
+                    <span className="ml-2 inline-flex rounded-full bg-ambar/10 px-2 py-0.5 text-[10px] font-semibold text-ambar">
+                      Especial
+                    </span>
+                  )}
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => editarCd(c)}
+                    className="rounded-md px-2 py-1 text-xs font-medium text-suave hover:bg-claro/10 hover:text-ambar transition-colors"
+                  >
+                    Editar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void aoExcluirCd(c)}
+                    title="Excluir (só se nunca usada)"
+                    className="rounded-md px-2 py-1 text-xs font-medium text-negativo hover:bg-negativo/10 transition-colors"
+                  >
+                    Excluir
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
     </div>
   );
 }
@@ -314,6 +450,15 @@ function IconeTema() {
   return (
     <svg className="h-5 w-5 text-ambar" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 21l-.813-5.096L3.091 15.1l5.096-.813L9 9.187l.813 5.096 5.096.813-5.096.813z" />
+    </svg>
+  );
+}
+
+function IconeCategoria() {
+  return (
+    <svg className="h-5 w-5 text-ambar" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9.568 3H5.25A2.25 2.25 0 003 5.25v4.318c0 .597.237 1.17.659 1.591l9.581 9.581c.699.699 1.78.872 2.607.33a18.095 18.095 0 005.223-5.223c.542-.827.369-1.908-.33-2.607L11.16 3.66A2.25 2.25 0 009.568 3z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M6 6h.008v.008H6V6z" />
     </svg>
   );
 }

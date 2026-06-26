@@ -4,7 +4,7 @@ import { Fechamento } from './fechamento/Fechamento';
 import { sair } from '../data/sessao';
 import type { UsuarioAtual } from '../data/usuario';
 
-import { Produtos } from './catalogo/Produtos';
+import { ProdutosCombustivel } from './catalogo/ProdutosCombustivel';
 import { Configuracoes } from './catalogo/Configuracoes';
 import { ContasETransferencias } from './financeiro/ContasETransferencias';
 import { Despesas } from './financeiro/Despesas';
@@ -16,6 +16,8 @@ import { Auditoria } from './auditoria/Auditoria';
 import { Usuarios } from './usuarios/Usuarios';
 import { MeuPerfil } from './usuarios/MeuPerfil';
 import { Avatar } from '../components/ui/Avatar';
+import { verificarSistemaInicializado } from '../data/repositorios';
+import { DiaZeroSetup } from './catalogo/DiaZeroSetup';
 
 type Tela = 'painel' | 'fechamento' | 'produtos' | 'configuracoes' | 'transferencias' | 'despesas' | 'socios' | 'fiado' | 'folha' | 'auditoria' | 'usuarios';
 export type Tema = 'light' | 'dark' | 'dark2' | 'system';
@@ -49,7 +51,7 @@ const ICONES: Record<Tela | 'sair', (className: string) => ReactNode> = {
   ),
   produtos: (className) => (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3 21h8M5 21V5a2 2 0 012-2h2a2 2 0 012 2v16M5 11h6m4-3l3 3v8a2 2 0 01-2 2 2 2 0 01-2-2v-3a1 1 0 00-1-1h-1m4-4V6a1 1 0 00-1-1" />
     </svg>
   ),
   configuracoes: (className) => (
@@ -105,6 +107,8 @@ const ICONE_EDITAR = (className: string) => (
 
 export function Shell({ usuario }: { usuario: UsuarioAtual }) {
   const isOnline = useOnlineStatus();
+  const [sistemaInicializado, setSistemaInicializado] = useState<boolean | null>(null);
+  const [iniciandoDiaZero, setIniciandoDiaZero] = useState(false);
   const [tela, setTela] = useState<Tela>('painel');
   const [menuAbertoMobile, setMenuAbertoMobile] = useState(false);
   const [perfilAberto, setPerfilAberto] = useState(false);
@@ -163,13 +167,28 @@ export function Shell({ usuario }: { usuario: UsuarioAtual }) {
     };
   }, [menuAbertoMobile]);
 
+  useEffect(() => {
+    verificarSistemaInicializado()
+      .then(setSistemaInicializado)
+      .catch((err) => {
+        console.error(err);
+        setSistemaInicializado(false);
+      });
+  }, []);
+
   const podeFechar = usuario.permissoes.has('fechar_caixa');
   const podeVerPainel =
     usuario.permissoes.has('ver_painel_operacional') || usuario.permissoes.has('ver_capital');
   const podeCadastrarProduto = usuario.permissoes.has('cadastrar_produto');
   // A tela de Produtos abre para quem cadastra produto OU só ajusta preço/custo
   // (vendedor) — a própria tela esconde as ações que cada um não pode (§5.6).
-  const podeVerProdutos = podeCadastrarProduto || usuario.permissoes.has('definir_preco_custo');
+  // "Produtos" no menu reúne combustível (cargas/medições/config) e mercadorias
+  // (cadastro/estoque) — abre para quem gerencia qualquer um dos dois OU só
+  // ajusta preço/custo (vendedor); a própria tela esconde o que cada um não pode.
+  const podeVerProdutos =
+    podeCadastrarProduto ||
+    usuario.permissoes.has('definir_preco_custo') ||
+    usuario.permissoes.has('gerenciar_combustivel');
   const podeGerenciarContas = usuario.permissoes.has('gerenciar_contas');
   const podeEditarConfig = usuario.permissoes.has('editar_configuracoes');
 
@@ -221,6 +240,14 @@ export function Shell({ usuario }: { usuario: UsuarioAtual }) {
       ))}
     </nav>
   );
+
+  if (sistemaInicializado === null) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-fundo text-suave">
+        <p className="text-sm font-semibold animate-pulse">Verificando inicialização do sistema...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-full flex-col md:flex-row">
@@ -390,30 +417,55 @@ export function Shell({ usuario }: { usuario: UsuarioAtual }) {
       {/* ───────── Conteúdo principal ───────── */}
       <main className="flex-1 overflow-y-auto p-4 md:p-8 lg:p-10">
         <div key={tela} className="animar-surgir mx-auto w-full max-w-6xl">
-          {tela === 'painel' && podeVerPainel && <Painel usuario={usuario} />}
-          {tela === 'fechamento' && podeFechar && (
-            <Fechamento
-              usuarioId={usuario.id}
-              podeReabrir={usuario.permissoes.has('reabrir_fechamento')}
-            />
+          {!sistemaInicializado ? (
+            !iniciandoDiaZero ? (
+              <div className="flex flex-col items-center justify-center py-20 text-center animate-fadeIn">
+                <div className="mb-6 flex h-20 w-20 items-center justify-center rounded-full bg-ambar/10 text-ambar ring-1 ring-ambar/30 shadow-xl">
+                  <svg className="h-10 w-10" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                  </svg>
+                </div>
+                <h2 className="text-3xl font-display font-bold text-claro mb-4">Bem-vindo ao Pontão Beira Rio</h2>
+                <p className="text-suave mb-8 max-w-lg leading-relaxed">
+                  O sistema ainda não foi inicializado. Para começar a operar, lançar vendas e gerenciar o caixa, 
+                  é necessário configurar o "Dia Zero" com os saldos e estoques iniciais.
+                </p>
+                <button onClick={() => setIniciandoDiaZero(true)} className="btn btn-primario px-8 py-3 text-sm font-bold shadow-lg shadow-ambar/20">
+                  Iniciar Configuração do Dia Zero
+                </button>
+              </div>
+            ) : (
+              <DiaZeroSetup usuarioId={usuario.id} aoConcluir={() => { setSistemaInicializado(true); setIniciandoDiaZero(false); }} />
+            )
+          ) : (
+            <>
+              {tela === 'painel' && podeVerPainel && <Painel usuario={usuario} />}
+              {tela === 'fechamento' && podeFechar && (
+                <Fechamento
+                  usuarioId={usuario.id}
+                  podeReabrir={usuario.permissoes.has('reabrir_fechamento')}
+                />
+              )}
+              {tela === 'despesas' && podeLancarDespesa && <Despesas usuarioId={usuario.id} />}
+              {tela === 'transferencias' && (podeTransferir || podeGerenciarContas) && (
+                <ContasETransferencias
+                  usuarioId={usuario.id}
+                  podeTransferir={podeTransferir}
+                  podeGerenciarContas={podeGerenciarContas}
+                />
+              )}
+              {tela === 'socios' && podeGerenciarSocios && <Socios usuarioId={usuario.id} />}
+              {tela === 'fiado' && podeGerenciarFiado && <Fiado usuarioId={usuario.id} />}
+              {tela === 'folha' && podeGerenciarFuncionarios && <Folha usuarioId={usuario.id} />}
+              {tela === 'produtos' && podeVerProdutos && <ProdutosCombustivel usuario={usuario} />}
+              {tela === 'configuracoes' && podeEditarConfig && (
+                <Configuracoes tema={theme} aoTrocarTema={alterarTema} />
+              )}
+              {tela === 'usuarios' && podeGerenciarUsuarios && <Usuarios usuario={usuario} />}
+              {tela === 'auditoria' && podeVerAuditoria && <Auditoria />}
+            </>
           )}
-          {tela === 'despesas' && podeLancarDespesa && <Despesas usuarioId={usuario.id} />}
-          {tela === 'transferencias' && (podeTransferir || podeGerenciarContas) && (
-            <ContasETransferencias
-              usuarioId={usuario.id}
-              podeTransferir={podeTransferir}
-              podeGerenciarContas={podeGerenciarContas}
-            />
-          )}
-          {tela === 'socios' && podeGerenciarSocios && <Socios usuarioId={usuario.id} />}
-          {tela === 'fiado' && podeGerenciarFiado && <Fiado usuarioId={usuario.id} />}
-          {tela === 'folha' && podeGerenciarFuncionarios && <Folha usuarioId={usuario.id} />}
-          {tela === 'produtos' && podeVerProdutos && <Produtos usuario={usuario} />}
-          {tela === 'configuracoes' && podeEditarConfig && (
-            <Configuracoes tema={theme} aoTrocarTema={alterarTema} />
-          )}
-          {tela === 'usuarios' && podeGerenciarUsuarios && <Usuarios usuario={usuario} />}
-          {tela === 'auditoria' && podeVerAuditoria && <Auditoria />}
         </div>
       </main>
 

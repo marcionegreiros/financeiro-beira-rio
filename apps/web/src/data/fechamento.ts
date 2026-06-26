@@ -103,13 +103,13 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
     supabase.from('fechamento').select('id, status, rascunho').eq('data', data).maybeSingle(),
     supabase
       .from('bomba')
-      .select('id,nome,tanque(combustivel_id,combustivel(nome))')
-      .eq('ativo', true),
+      .select('id,nome,tanque!inner(combustivel_id,ativo,combustivel(nome))')
+      .eq('ativo', true)
+      .eq('tanque.ativo', true),
     supabase.from('preco_combustivel').select('combustivel_id,valor_centavos,valido_a_partir_de'),
     supabase
       .from('produto')
-      .select('id,nome,ordem,modo_apuracao')
-      .eq('ativo', true)
+      .select('id,nome,ordem,modo_apuracao,ativo')
       .order('ordem'),
     supabase.from('preco_produto').select('produto_id,valor_centavos,valido_a_partir_de'),
     supabase.from('config').select('chave,valor_json'),
@@ -171,19 +171,7 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
     };
   });
 
-  const todosProdutos: ProdutoCtx[] = (
-    (produtosRaw ?? []) as Array<{ id: string; nome: string; ordem: number; modo_apuracao: 'contagem' | 'individual' }>
-  ).map((p) => ({
-    id: p.id,
-    nome: p.nome,
-    ordem: p.ordem,
-    preco: precoVigenteEm(histProd.get(p.id) ?? [], data),
-    estoqueAnterior: paraQuantidade(qtdAnterior.get(p.id) ?? 0),
-    modoApuracao: p.modo_apuracao,
-  }));
 
-  const produtos = todosProdutos.filter((p) => p.modoApuracao === 'contagem');
-  const produtosIndividuais = todosProdutos.filter((p) => p.modoApuracao === 'individual');
 
   const clientesFiado = ((clientesRaw ?? []) as Array<{ id: string; nome: string }>).map((c) => ({
     id: c.id,
@@ -360,6 +348,31 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
       observacao,
     };
   }
+
+  const todosProdutos: ProdutoCtx[] = (
+    (produtosRaw ?? []) as Array<{ id: string; nome: string; ordem: number; modo_apuracao: 'contagem' | 'individual'; ativo: boolean }>
+  )
+    .filter((p) => {
+      if (p.ativo) return true;
+      if (contagens[p.id] !== undefined) return true;
+      if (vendasIndividuais[p.id] !== undefined) return true;
+      if (entradasDoDia[p.id] !== undefined) return true;
+      if (valoresSalvos?.contagens?.[p.id] !== undefined) return true;
+      if (valoresSalvos?.vendasIndividuais?.[p.id] !== undefined) return true;
+      if (qtdAnterior.has(p.id)) return true;
+      return false;
+    })
+    .map((p) => ({
+      id: p.id,
+      nome: p.nome,
+      ordem: p.ordem,
+      preco: precoVigenteEm(histProd.get(p.id) ?? [], data),
+      estoqueAnterior: paraQuantidade(qtdAnterior.get(p.id) ?? 0),
+      modoApuracao: p.modo_apuracao as 'contagem' | 'individual',
+    }));
+
+  const produtos = todosProdutos.filter((p) => p.modoApuracao === 'contagem');
+  const produtosIndividuais = todosProdutos.filter((p) => p.modoApuracao === 'individual');
 
   return {
     data,
@@ -909,7 +922,7 @@ export async function recalcularCascata(dataInicial: string): Promise<void> {
       { data: bombasRaw },
       { data: produtosRaw }
     ] = await Promise.all([
-      supabase.from('bomba').select('id,tanque(combustivel_id)').eq('ativo', true),
+      supabase.from('bomba').select('id,tanque!inner(combustivel_id,ativo)').eq('ativo', true).eq('tanque.ativo', true),
       supabase.from('produto').select('id,modo_apuracao').eq('ativo', true),
     ]);
 

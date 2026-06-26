@@ -1,11 +1,22 @@
 import { useState, useEffect, type FormEvent } from 'react';
-import { listarContasCompletas, salvarConta, type ContaCompleta } from '../../data/repositorios';
+import {
+  listarContasCompletas,
+  salvarConta,
+  uploadFotoConta,
+  removerConta,
+  type ContaCompleta,
+  temFechamentoOperacional,
+  definirSaldoInicialConta,
+  buscarSaldoInicialConta
+} from '../../data/repositorios';
 import { uuidv7 } from '../../lib/uuidv7';
 import { useToast } from '../../components/ui/Toast';
 import { Modal } from '../../components/ui/Modal';
 import { DataTable, type Coluna } from '../../components/ui/DataTable';
+import { asCentavos } from '../../lib/money';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { Campo, CLASSE_CAMPO } from '../../components/ui/Campo';
+import { Avatar } from '../../components/ui/Avatar';
 
 const TIPOS: Record<string, string> = {
   dinheiro: 'Dinheiro (Físico)',
@@ -25,6 +36,11 @@ export function Contas() {
   const [ehDestinoPadraoVenda, setEhDestinoPadraoVenda] = useState(false);
   const [ativo, setAtivo] = useState(true);
   const [salvando, setSalvando] = useState(false);
+  const [saldoInicial, setSaldoInicial] = useState('');
+  const [bloquearDiaZero, setBloquearDiaZero] = useState(false);
+
+  const [fotoFile, setFotoFile] = useState<File | null>(null);
+  const [fotoPreview, setFotoPreview] = useState<string | null>(null);
 
   async function carregar() {
     try {
@@ -40,6 +56,7 @@ export function Contas() {
 
   useEffect(() => {
     void carregar();
+    temFechamentoOperacional().then(setBloquearDiaZero).catch(console.error);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -49,6 +66,9 @@ export function Contas() {
     setTipo('dinheiro');
     setEhDestinoPadraoVenda(false);
     setAtivo(true);
+    setFotoFile(null);
+    setFotoPreview(null);
+    setSaldoInicial('');
   }
 
   function abrirNova() {
@@ -62,6 +82,19 @@ export function Contas() {
     setTipo(conta.tipo as 'dinheiro' | 'banco');
     setEhDestinoPadraoVenda(conta.ehDestinoPadraoVenda);
     setAtivo(conta.ativo);
+    setFotoFile(null);
+    setFotoPreview(conta.fotoUrl ?? null);
+    setSaldoInicial('');
+
+    buscarSaldoInicialConta(conta.id)
+      .then((val) => {
+        if (val !== null) {
+          const reais = Number(val) / 100;
+          setSaldoInicial(reais.toFixed(2).replace('.', ','));
+        }
+      })
+      .catch(console.error);
+
     setAberto(true);
   }
 
@@ -73,14 +106,34 @@ export function Contas() {
     }
     setSalvando(true);
     try {
+      const id = editandoId ?? uuidv7();
+      let fUrl = editandoId ? (contas.find(c => c.id === editandoId)?.fotoUrl ?? null) : null;
+
+      if (fotoFile) {
+        fUrl = await uploadFotoConta(id, fotoFile);
+      } else if (fotoPreview === null) {
+        fUrl = null;
+      }
+
       const conta: ContaCompleta = {
-        id: editandoId ?? uuidv7(),
+        id,
         nome: nome.trim(),
         tipo,
         ehDestinoPadraoVenda,
         ativo,
+        fotoUrl: fUrl,
       };
       await salvarConta(conta);
+
+      if (!bloquearDiaZero && saldoInicial.trim() !== '') {
+        const clean = saldoInicial.trim().replace(/\./g, '').replace(',', '.');
+        const num = Number(clean);
+        if (!isNaN(num)) {
+          const centavos = asCentavos(BigInt(Math.round(num * 100)));
+          await definirSaldoInicialConta(id, centavos, null);
+        }
+      }
+
       toast.sucesso(editandoId ? 'Conta atualizada.' : 'Conta criada.');
       setAberto(false);
       limparForm();
@@ -93,11 +146,32 @@ export function Contas() {
     }
   }
 
+  async function aoExcluir(c: ContaCompleta) {
+    if (!confirm(`Excluir a conta "${c.nome}"? Esta ação é definitiva.`)) return;
+    try {
+      await removerConta(c.id);
+      toast.sucesso('Conta excluída.');
+      await carregar();
+    } catch (err) {
+      console.error(err);
+      toast.erro(
+        (err as Error)?.message === 'NAO_EXCLUIDO'
+          ? 'Esta conta já tem movimentos lançados — apenas inative-a.'
+          : 'Erro ao excluir conta.',
+      );
+    }
+  }
+
   const colunas: Coluna<ContaCompleta>[] = [
     {
       chave: 'nome',
       titulo: 'Nome',
-      render: (c) => <span className="font-medium">{c.nome}</span>,
+      render: (c) => (
+        <div className="flex items-center gap-3">
+          <Avatar nome={c.nome} fotoUrl={c.fotoUrl} size="sm" />
+          <span className="font-medium text-claro">{c.nome}</span>
+        </div>
+      ),
     },
     {
       chave: 'tipo',
@@ -139,13 +213,23 @@ export function Contas() {
       titulo: '',
       alinhar: 'right',
       render: (c) => (
-        <button
-          type="button"
-          onClick={() => abrirEditar(c)}
-          className="rounded-md px-2 py-1 text-xs font-medium text-suave transition-colors hover:bg-claro/10 hover:text-ambar"
-        >
-          Editar
-        </button>
+        <div className="flex justify-end gap-1.5">
+          <button
+            type="button"
+            onClick={() => abrirEditar(c)}
+            className="rounded-md px-2 py-1 text-xs font-medium text-suave transition-colors hover:bg-claro/10 hover:text-ambar"
+          >
+            Editar
+          </button>
+          <button
+            type="button"
+            onClick={() => void aoExcluir(c)}
+            title="Excluir (só se nunca usada)"
+            className="rounded-md px-2 py-1 text-xs font-medium text-negativo transition-colors hover:bg-negativo/10"
+          >
+            Excluir
+          </button>
+        </div>
       ),
     },
   ];
@@ -181,6 +265,36 @@ export function Contas() {
         descricao="Configure a conta onde o dinheiro será rastreado."
       >
         <form onSubmit={aoSalvar} className="flex flex-col gap-4">
+          <div className="flex items-center gap-4 border-b border-borda/30 pb-3">
+            <Avatar nome={nome || 'Conta'} fotoUrl={fotoPreview} size="lg" />
+            <label className="btn btn-suave cursor-pointer px-3 py-1.5 text-xs">
+              Inserir foto da conta
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (!f) return;
+                  setFotoFile(f);
+                  setFotoPreview(URL.createObjectURL(f));
+                }}
+              />
+            </label>
+            {fotoPreview && (
+              <button
+                type="button"
+                onClick={() => {
+                  setFotoFile(null);
+                  setFotoPreview(null);
+                }}
+                className="text-xs text-suave hover:text-negativo transition-colors"
+              >
+                Remover foto
+              </button>
+            )}
+          </div>
+
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Campo label="Nome da conta" obrigatorio>
               <input
@@ -202,6 +316,24 @@ export function Contas() {
                 ))}
               </select>
             </Campo>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            {(editandoId === null || !bloquearDiaZero || saldoInicial !== '') && (
+              <Campo 
+                label={bloquearDiaZero ? "Saldo inicial (Dia Zero) [Bloqueado]" : "Saldo inicial (Dia Zero)"}
+                dica={bloquearDiaZero ? "Bloqueado pois já existem fechamentos posteriores" : "Saldo de partida da conta"}
+              >
+                <input
+                  type="text"
+                  disabled={bloquearDiaZero}
+                  className={`${CLASSE_CAMPO} ${bloquearDiaZero ? 'bg-claro/5 cursor-not-allowed text-suave' : ''}`}
+                  placeholder="0,00"
+                  value={saldoInicial}
+                  onChange={(e) => setSaldoInicial(e.target.value)}
+                />
+              </Campo>
+            )}
           </div>
 
           <div className="flex flex-col gap-3 sm:flex-row sm:gap-6">

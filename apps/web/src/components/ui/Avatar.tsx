@@ -15,7 +15,7 @@ const DIMENSOES: Record<Tamanho, string> = {
 
 interface Props {
   nome: string;
-  fotoUrl?: string | null;
+  fotoUrl?: string | null | undefined;
   size?: Tamanho;
   /** Classe extra (ex.: ring custom no sidebar). */
   className?: string;
@@ -30,6 +30,7 @@ export function Avatar({ nome, fotoUrl, size = 'md', className = '' }: Props) {
       <img
         src={fotoUrl}
         alt={nome}
+        title={nome}
         className={`${dim} shrink-0 rounded-full object-cover ring-1 ring-borda ${className}`}
       />
     );
