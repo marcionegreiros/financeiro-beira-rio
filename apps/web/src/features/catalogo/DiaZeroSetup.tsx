@@ -109,6 +109,7 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
       return toast.erro("Você tem um bico preenchido no formulário. Confirme ou limpe antes de editar outro.");
     }
     const b = bicosTemporarios[index];
+    if (!b) return;
     setBicoFormNome(b.nome);
     setBicoFormLeitura(b.encerranteInicial.toLocaleString('pt-BR'));
     removerBicoTemporario(index);
@@ -168,6 +169,7 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
       return toast.erro("Você tem um combustível ou tanque preenchido. Confirme ou limpe antes de editar outro.");
     }
     const c = listaCombustiveis[index];
+    if (!c) return;
     const ehPadraoComb = ['Gasolina Comum', 'Gasolina Aditivada', 'Etanol', 'Diesel S10', 'Diesel S500'].includes(c.nome);
     setCombModo(ehPadraoComb ? 'lista' : 'livre');
     setCombNome(c.nome);
@@ -228,6 +230,7 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
       return toast.erro("Você tem um produto preenchido no formulário. Confirme ou limpe antes de editar outro.");
     }
     const p = listaProdutos[index];
+    if (!p) return;
     setProdNome(p.nome);
     setProdCategoriaId(p.categoriaId);
     setProdModo(p.modoApuracao as 'contagem' | 'individual');
@@ -276,6 +279,7 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
       return toast.erro("Você tem uma conta preenchida no formulário. Confirme ou limpe antes de editar outra.");
     }
     const c = listaContas[index];
+    if (!c) return;
     const ehPadraoNome = ['Caixa Gaveta', 'Conta Bradesco', 'Banco do Brasil', 'Nubank'].includes(c.nome);
     setContaModo(ehPadraoNome ? 'lista' : 'livre');
     setContaNovaNome(c.nome);
@@ -977,8 +981,8 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
                           } else {
                             setContaNovaNome(val);
                             // Auto-set type based on name suggestion
-                            if (val === 'Caixa Gaveta') setContaNovaTipo('dinheiro');
-                            else setContaNovaTipo('banco');
+                            if (val === 'Caixa Gaveta') setContaNovaTipoUI('dinheiro');
+                            else setContaNovaTipoUI('banco');
                           }
                         }}
                       >
