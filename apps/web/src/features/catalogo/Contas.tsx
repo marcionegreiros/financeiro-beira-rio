@@ -1,11 +1,12 @@
 import { useState, useEffect, type FormEvent } from 'react';
-import { listarContasCompletas, salvarConta, type ContaCompleta } from '../../data/repositorios';
+import { listarContasCompletas, salvarConta, uploadFotoConta, type ContaCompleta } from '../../data/repositorios';
 import { uuidv7 } from '../../lib/uuidv7';
 import { useToast } from '../../components/ui/Toast';
 import { Modal } from '../../components/ui/Modal';
 import { DataTable, type Coluna } from '../../components/ui/DataTable';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { Campo, CLASSE_CAMPO } from '../../components/ui/Campo';
+import { Avatar } from '../../components/ui/Avatar';
 
 const TIPOS: Record<string, string> = {
   dinheiro: 'Dinheiro (Físico)',
@@ -25,6 +26,9 @@ export function Contas() {
   const [ehDestinoPadraoVenda, setEhDestinoPadraoVenda] = useState(false);
   const [ativo, setAtivo] = useState(true);
   const [salvando, setSalvando] = useState(false);
+
+  const [fotoFile, setFotoFile] = useState<File | null>(null);
+  const [fotoPreview, setFotoPreview] = useState<string | null>(null);
 
   async function carregar() {
     try {
@@ -49,6 +53,8 @@ export function Contas() {
     setTipo('dinheiro');
     setEhDestinoPadraoVenda(false);
     setAtivo(true);
+    setFotoFile(null);
+    setFotoPreview(null);
   }
 
   function abrirNova() {
@@ -62,6 +68,8 @@ export function Contas() {
     setTipo(conta.tipo as 'dinheiro' | 'banco');
     setEhDestinoPadraoVenda(conta.ehDestinoPadraoVenda);
     setAtivo(conta.ativo);
+    setFotoFile(null);
+    setFotoPreview(conta.fotoUrl ?? null);
     setAberto(true);
   }
 
@@ -73,12 +81,22 @@ export function Contas() {
     }
     setSalvando(true);
     try {
+      const id = editandoId ?? uuidv7();
+      let fUrl = editandoId ? (contas.find(c => c.id === editandoId)?.fotoUrl ?? null) : null;
+
+      if (fotoFile) {
+        fUrl = await uploadFotoConta(id, fotoFile);
+      } else if (fotoPreview === null) {
+        fUrl = null;
+      }
+
       const conta: ContaCompleta = {
-        id: editandoId ?? uuidv7(),
+        id,
         nome: nome.trim(),
         tipo,
         ehDestinoPadraoVenda,
         ativo,
+        fotoUrl: fUrl,
       };
       await salvarConta(conta);
       toast.sucesso(editandoId ? 'Conta atualizada.' : 'Conta criada.');
@@ -97,7 +115,12 @@ export function Contas() {
     {
       chave: 'nome',
       titulo: 'Nome',
-      render: (c) => <span className="font-medium">{c.nome}</span>,
+      render: (c) => (
+        <div className="flex items-center gap-3">
+          <Avatar nome={c.nome} fotoUrl={c.fotoUrl} size="sm" />
+          <span className="font-medium text-claro">{c.nome}</span>
+        </div>
+      ),
     },
     {
       chave: 'tipo',
@@ -181,6 +204,36 @@ export function Contas() {
         descricao="Configure a conta onde o dinheiro será rastreado."
       >
         <form onSubmit={aoSalvar} className="flex flex-col gap-4">
+          <div className="flex items-center gap-4 border-b border-borda/30 pb-3">
+            <Avatar nome={nome || 'Conta'} fotoUrl={fotoPreview} size="lg" />
+            <label className="btn btn-suave cursor-pointer px-3 py-1.5 text-xs">
+              Inserir foto da conta
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (!f) return;
+                  setFotoFile(f);
+                  setFotoPreview(URL.createObjectURL(f));
+                }}
+              />
+            </label>
+            {fotoPreview && (
+              <button
+                type="button"
+                onClick={() => {
+                  setFotoFile(null);
+                  setFotoPreview(null);
+                }}
+                className="text-xs text-suave hover:text-negativo transition-colors"
+              >
+                Remover foto
+              </button>
+            )}
+          </div>
+
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Campo label="Nome da conta" obrigatorio>
               <input

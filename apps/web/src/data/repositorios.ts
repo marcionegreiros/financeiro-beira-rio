@@ -9,10 +9,11 @@ import { supabase } from './supabase';
 import { paraCentavos, litrosParaMililitros, centavosParaNumero, quantidadeParaNumero } from './conversao';
 import { precoVigenteEm, custoVigenteEm, type RegistroVigencia } from '../domain/precos';
 import { capitalTotal, capitalOperacional } from '../domain/capital';
+import { nivelCalculado } from '../domain/tanque';
 import { hojeManaus, limitesDoDiaManaus } from '../lib/datas';
 import { uuidv7 } from '../lib/uuidv7';
 import { somar, asCentavos, type Centavos } from '../lib/money';
-import type { Mililitros, Quantidade } from '../domain/tipos';
+import { asMililitros, type Mililitros, type Quantidade } from '../domain/tipos';
 
 export interface SaldoConta {
   id: string;
@@ -50,21 +51,170 @@ export interface TanquePainel {
   nivel: Mililitros;
 }
 
-/** Tanques com nível atual (última medição de régua) e capacidade. */
-export async function listarTanques(): Promise<TanquePainel[]> {
-  const [{ data: tanques, error: e1 }, { data: medicoes, error: e2 }] = await Promise.all([
-    supabase
-      .from('tanque')
-      .select('id,nome,capacidade_litros,nivel_alerta_litros,combustivel(nome)'),
+/**
+ * Nível DERIVADO de eventos (Pilar 1), em mililitros, por tanque:
+ *
+ *   nivel = última medição de régua
+ *         + Σ entradas de carga posteriores à medição
+ *         − litros vendidos desde a medição
+ *
+ * Litros vendidos saem do encerrante (cumulativo): para cada bomba do tanque,
+ * vendido = leitura mais recente − leitura no fechamento vigente na data da
+ * medição. Sem medição, parte de 0 e desconta tudo o que foi vendido. A régua
+ * deixa de SER o nível e passa a ser a ân * Granularidade de DIA: entradas/vendas são atribuídas pela data, não pela hora.
+ */
+async function calcularNiveisDerivados(dataLimite?: string): Promise<Map<string, Mililitros>> {
+  const [
+    { data: medicoes, error: e1 },
+    { data: entradas, error: e2 },
+    { data: bombas, error: e3 },
+    { data: leituras, error: e4 },
+    { data: fechamentos, error: e5 },
+  ] = await Promise.all([
     supabase
       .from('medicao_tanque')
       .select('tanque_id,litros_medidos,data_hora')
-      .order('data_hora', {
-        ascending: false,
-      }),
+      .order('data_hora', { ascending: false }),
+    supabase.from('entrada_combustivel').select('tanque_id,litros,data'),
+    supabase.from('bomba').select('id,tanque_id'),
+    supabase.from('leitura_bomba').select('fechamento_id,bomba_id,leitura'),
+    supabase.from('fechamento').select('id,data'),
   ]);
   if (e1) throw e1;
   if (e2) throw e2;
+  if (e3) throw e3;
+  if (e4) throw e4;
+  if (e5) throw e5;
+
+  // Filtrar medições e entradas em memória se houver dataLimite
+  let listaMedicoes = (medicoes ?? []) as Array<{ tanque_id: string; litros_medidos: number; data_hora: string }>;
+  if (dataLimite) {
+    listaMedicoes = listaMedicoes.filter((m) => m.data_hora.slice(0, 10) <= dataLimite);
+  }
+
+  // Última medição (litros + data) por tanque
+  const ultimaMedicao = new Map<string, { litros: number; data: string }>();
+  for (const m of listaMedicoes) {
+    if (!ultimaMedicao.has(m.tanque_id)) {
+      ultimaMedicao.set(m.tanque_id, { litros: Number(m.litros_medidos), data: m.data_hora.slice(0, 10) });
+    }
+  }
+
+  // Data de cada fechamento e bomba→tanque.
+  const dataFech = new Map<string, string>();
+  for (const f of (fechamentos ?? []) as Array<{ id: string; data: string }>) {
+    if (!dataLimite || f.data <= dataLimite) {
+      dataFech.set(f.id, f.data);
+    }
+  }
+
+  const tanqueDaBomba = new Map<string, string>();
+  const bombasDoTanque = new Map<string, string[]>();
+  for (const b of (bombas ?? []) as Array<{ id: string; tanque_id: string }>) {
+    tanqueDaBomba.set(b.id, b.tanque_id);
+    const lista = bombasDoTanque.get(b.tanque_id) ?? [];
+    lista.push(b.id);
+    bombasDoTanque.set(b.tanque_id, lista);
+  }
+
+  // Leituras por bomba, ordenadas por data do fechamento (asc).
+  const leiturasPorBomba = new Map<string, Array<{ data: string; leitura: number }>>();
+  for (const l of (leituras ?? []) as Array<{ fechamento_id: string; bomba_id: string; leitura: number }>) {
+    const data = dataFech.get(l.fechamento_id);
+    if (!data) continue;
+    const lista = leiturasPorBomba.get(l.bomba_id) ?? [];
+    lista.push({ data, leitura: Number(l.leitura) });
+    leiturasPorBomba.set(l.bomba_id, lista);
+  }
+  for (const lista of leiturasPorBomba.values()) lista.sort((a, b) => a.data.localeCompare(b.data));
+
+  // Entradas posteriores à medição (litros) por tanque.
+  const entradasPorTanque = new Map<string, Array<{ data: string; litros: number }>>();
+  for (const e of (entradas ?? []) as Array<{ tanque_id: string; litros: number; data: string }>) {
+    if (!dataLimite || e.data <= dataLimite) {
+      const lista = entradasPorTanque.get(e.tanque_id) ?? [];
+      lista.push({ data: e.data, litros: Number(e.litros) });
+      entradasPorTanque.set(e.tanque_id, lista);
+    }
+  }
+
+  // Litros vendidos por bomba desde uma data: encerrante atual − encerrante na data.
+  function vendidoDesde(bombaId: string, dataMedicao: string | null): number {
+    const lista = leiturasPorBomba.get(bombaId);
+    if (!lista || lista.length === 0) return 0;
+    
+    // O encerrante atual sob a ótica da data limite é a última leitura <= dataLimite
+    let indexAtual = lista.length - 1;
+    if (dataLimite) {
+      indexAtual = -1;
+      for (let i = lista.length - 1; i >= 0; i--) {
+        if (lista[i]!.data <= dataLimite) {
+          indexAtual = i;
+          break;
+        }
+      }
+    }
+    if (indexAtual === -1) return 0;
+
+    const atual = lista[indexAtual]!.leitura;
+    if (!dataMedicao) return Math.max(0, atual - lista[0]!.leitura);
+
+    // Encerrante base na medição:
+    let base: number | null = null;
+    for (let i = 0; i <= indexAtual; i++) {
+      const r = lista[i]!;
+      if (r.data <= dataMedicao) base = r.leitura;
+      else break;
+    }
+    if (base === null) base = lista[0]!.leitura;
+    return Math.max(0, atual - base);
+  }
+
+  const tanqueIds = new Set<string>([
+    ...ultimaMedicao.keys(),
+    ...bombasDoTanque.keys(),
+    ...entradasPorTanque.keys(),
+  ]);
+
+  const niveis = new Map<string, Mililitros>();
+  for (const tanqueId of tanqueIds) {
+    const med = ultimaMedicao.get(tanqueId) ?? null;
+    const nivelAnterior = litrosParaMililitros(med?.litros ?? 0);
+
+    let entradasMl = 0n;
+    for (const e of entradasPorTanque.get(tanqueId) ?? []) {
+      if (!med || e.data > med.data) {
+        entradasMl += litrosParaMililitros(e.litros);
+      }
+    }
+
+    let vendidoLitros = 0;
+    for (const bombaId of bombasDoTanque.get(tanqueId) ?? []) {
+      vendidoLitros += vendidoDesde(bombaId, med?.data ?? null);
+    }
+
+    niveis.set(
+      tanqueId,
+      nivelCalculado({
+        nivelAnterior,
+        entradas: asMililitros(entradasMl),
+        litrosVendidos: litrosParaMililitros(vendidoLitros),
+      }),
+    );
+  }
+  return niveis;
+}
+
+/** Tanques com nível ATUAL derivado de eventos (medição + entradas − vendido). */
+export async function listarTanques(): Promise<TanquePainel[]> {
+  const [{ data: tanques, error: e1 }, niveis] = await Promise.all([
+    supabase
+      .from('tanque')
+      .select('id,nome,capacidade_litros,nivel_alerta_litros,combustivel(nome)')
+      .eq('ativo', true),
+    calcularNiveisDerivados(),
+  ]);
+  if (e1) throw e1;
 
   const linhasTanque = (tanques ?? []) as Array<{
     id: string;
@@ -73,13 +223,6 @@ export async function listarTanques(): Promise<TanquePainel[]> {
     nivel_alerta_litros: number;
     combustivel: { nome: string } | { nome: string }[] | null;
   }>;
-  const linhasMedicao = (medicoes ?? []) as Array<{ tanque_id: string; litros_medidos: number }>;
-
-  // Como já vem ordenado desc por data_hora, a primeira medição vista é a última.
-  const ultimaMedicao = new Map<string, number>();
-  for (const m of linhasMedicao) {
-    if (!ultimaMedicao.has(m.tanque_id)) ultimaMedicao.set(m.tanque_id, m.litros_medidos);
-  }
 
   return linhasTanque.map((t) => {
     const comb = Array.isArray(t.combustivel) ? t.combustivel[0] : t.combustivel;
@@ -89,7 +232,7 @@ export async function listarTanques(): Promise<TanquePainel[]> {
       combustivel: comb?.nome ?? '',
       capacidade: litrosParaMililitros(t.capacidade_litros),
       nivelAlerta: litrosParaMililitros(t.nivel_alerta_litros),
-      nivel: litrosParaMililitros(ultimaMedicao.get(t.id) ?? 0),
+      nivel: niveis.get(t.id) ?? asMililitros(0n),
     };
   });
 }
@@ -172,18 +315,20 @@ export interface ContaCompleta {
   tipo: string;
   ehDestinoPadraoVenda: boolean;
   ativo: boolean;
+  fotoUrl?: string | null;
 }
 
 export async function listarContasCompletas(): Promise<ContaCompleta[]> {
-  const { data, error } = await supabase.from('conta').select('id,nome,tipo,eh_destino_padrao_venda,ativo').order('nome');
+  const { data, error } = await supabase.from('conta').select('id,nome,tipo,eh_destino_padrao_venda,ativo,foto_url').order('nome');
   if (error) throw error;
-  const linhas = (data ?? []) as Array<{ id: string, nome: string, tipo: string, eh_destino_padrao_venda: boolean, ativo: boolean }>;
+  const linhas = (data ?? []) as Array<{ id: string, nome: string, tipo: string, eh_destino_padrao_venda: boolean, ativo: boolean, foto_url: string | null }>;
   return linhas.map(r => ({
     id: r.id,
     nome: r.nome,
     tipo: r.tipo,
     ehDestinoPadraoVenda: r.eh_destino_padrao_venda,
     ativo: r.ativo,
+    fotoUrl: r.foto_url,
   }));
 }
 
@@ -194,8 +339,25 @@ export async function salvarConta(conta: ContaCompleta): Promise<void> {
     tipo: conta.tipo,
     eh_destino_padrao_venda: conta.ehDestinoPadraoVenda,
     ativo: conta.ativo,
+    foto_url: conta.fotoUrl,
   });
   if (error) throw error;
+}
+
+export async function uploadFotoConta(contaId: string, arquivo: File): Promise<string> {
+  const ext = (arquivo.name.split('.').pop() || 'jpg').toLowerCase();
+  const caminho = `contas/${contaId}/avatar.${ext}`;
+  const { error: eUp } = await supabase.storage
+    .from('avatares')
+    .upload(caminho, arquivo, { upsert: true, contentType: arquivo.type });
+  if (eUp) throw eUp;
+
+  const { data: pub } = supabase.storage.from('avatares').getPublicUrl(caminho);
+  const url = `${pub.publicUrl}?v=${Date.now()}`;
+
+  const { error: eUsr } = await supabase.from('conta').update({ foto_url: url }).eq('id', contaId);
+  if (eUsr) throw eUsr;
+  return url;
 }
 
 export async function lerConfig(chave: string): Promise<unknown> {
@@ -366,6 +528,320 @@ export async function adicionarEntradaMercadoria(
     quantidade,
     custo_unitario_centavos: centavosParaNumero(custoUnitarioCentavos),
     data,
+  });
+  if (error) throw error;
+}
+
+// =====================================================================
+// Combustível e tanques (§3.2, §5.6) — cadastro, entradas, medições,
+// preço e custo. Preço/custo são por COMBUSTÍVEL (não por tanque).
+// =====================================================================
+
+export interface Combustivel {
+  id: string;
+  nome: string;
+}
+
+export async function listarCombustiveis(): Promise<Combustivel[]> {
+  const { data, error } = await supabase.from('combustivel').select('id,nome').order('nome');
+  if (error) throw error;
+  return ((data ?? []) as Array<{ id: string; nome: string }>).map((c) => ({ id: c.id, nome: c.nome }));
+}
+
+export async function salvarCombustivel(id: string, nome: string): Promise<void> {
+  const { error } = await supabase.from('combustivel').upsert({ id, nome });
+  if (error) throw error;
+}
+
+export interface TanqueConfig {
+  id: string;
+  nome: string;
+  combustivelId: string;
+  combustivelNome: string;
+  capacidade: Mililitros;
+  nivelAlerta: Mililitros;
+  nivel: Mililitros;
+  precoVenda: Centavos | null;
+  custo: Centavos | null;
+  ativo: boolean;
+  bombas: string[];
+}
+
+/** Tanques para a tela de gestão: config + nível derivado + preço/custo vigentes. */
+export async function listarTanquesConfig(dataSelecionada?: string): Promise<TanqueConfig[]> {
+  const [
+    { data: tanques, error: e1 },
+    { data: precos, error: e2 },
+    { data: custos, error: e3 },
+    { data: bombas, error: e4 },
+    niveis,
+  ] = await Promise.all([
+    supabase
+      .from('tanque')
+      .select('id,nome,combustivel_id,capacidade_litros,nivel_alerta_litros,ativo,combustivel(nome)')
+      .order('nome'),
+    supabase.from('preco_combustivel').select('combustivel_id,valor_centavos,valido_a_partir_de'),
+    supabase.from('custo_combustivel').select('combustivel_id,valor_centavos,valido_a_partir_de'),
+    supabase.from('bomba').select('tanque_id,nome,ativo'),
+    calcularNiveisDerivados(dataSelecionada),
+  ]);
+  if (e1) throw e1;
+  if (e2) throw e2;
+  if (e3) throw e3;
+  if (e4) throw e4;
+
+  const histPreco = new Map<string, RegistroVigencia[]>();
+  for (const p of (precos ?? []) as Array<{ combustivel_id: string; valor_centavos: number; valido_a_partir_de: string }>) {
+    const lista = histPreco.get(p.combustivel_id) ?? [];
+    lista.push({ valorCentavos: paraCentavos(p.valor_centavos), validoApartirDe: p.valido_a_partir_de });
+    histPreco.set(p.combustivel_id, lista);
+  }
+  const histCusto = new Map<string, RegistroVigencia[]>();
+  for (const c of (custos ?? []) as Array<{ combustivel_id: string; valor_centavos: number; valido_a_partir_de: string }>) {
+    const lista = histCusto.get(c.combustivel_id) ?? [];
+    lista.push({ valorCentavos: paraCentavos(c.valor_centavos), validoApartirDe: c.valido_a_partir_de });
+    histCusto.set(c.combustivel_id, lista);
+  }
+
+  const bombasPorTanque = new Map<string, string[]>();
+  for (const b of (bombas ?? []) as Array<{ tanque_id: string; nome: string; ativo: boolean }>) {
+    if (b.ativo) {
+      const lista = bombasPorTanque.get(b.tanque_id) ?? [];
+      lista.push(b.nome);
+      bombasPorTanque.set(b.tanque_id, lista);
+    }
+  }
+
+  const hoje = dataSelecionada ?? hojeManaus();
+  const agora = dataSelecionada ? `${dataSelecionada}T23:59:59-04:00` : new Date().toISOString();
+  return ((tanques ?? []) as Array<{
+    id: string; nome: string; combustivel_id: string;
+    capacidade_litros: number; nivel_alerta_litros: number; ativo: boolean;
+    combustivel: { nome: string } | { nome: string }[] | null;
+  }>).map((t) => {
+    const comb = Array.isArray(t.combustivel) ? t.combustivel[0] : t.combustivel;
+    return {
+      id: t.id,
+      nome: t.nome,
+      combustivelId: t.combustivel_id,
+      combustivelNome: comb?.nome ?? '',
+      capacidade: litrosParaMililitros(t.capacidade_litros),
+      nivelAlerta: litrosParaMililitros(t.nivel_alerta_litros),
+      nivel: niveis.get(t.id) ?? asMililitros(0n),
+      precoVenda: precoVigenteEm(histPreco.get(t.combustivel_id) ?? [], hoje) ?? null,
+      custo: custoVigenteEm(histCusto.get(t.combustivel_id) ?? [], agora) ?? null,
+      ativo: t.ativo,
+      bombas: bombasPorTanque.get(t.id) ?? [],
+    };
+  });
+}
+
+export interface TanqueGravavel {
+  id: string;
+  nome: string;
+  combustivelId: string;
+  capacidadeLitros: number;
+  nivelAlertaLitros: number;
+  ativo: boolean;
+}
+
+export async function salvarTanque(t: TanqueGravavel): Promise<void> {
+  const { error } = await supabase.from('tanque').upsert({
+    id: t.id,
+    nome: t.nome,
+    combustivel_id: t.combustivelId,
+    capacidade_litros: t.capacidadeLitros,
+    nivel_alerta_litros: t.nivelAlertaLitros,
+    ativo: t.ativo,
+  });
+  if (error) throw error;
+}
+
+export interface BombaConfig {
+  id: string;
+  tanqueId: string;
+  nome: string;
+  ativo: boolean;
+}
+
+export async function listarBombasTanque(tanqueId: string): Promise<BombaConfig[]> {
+  const { data, error } = await supabase
+    .from('bomba')
+    .select('id,tanque_id,nome,ativo')
+    .eq('tanque_id', tanqueId)
+    .order('nome');
+  if (error) throw error;
+  return ((data ?? []) as Array<{ id: string; tanque_id: string; nome: string; ativo: boolean }>).map(
+    (b) => ({ id: b.id, tanqueId: b.tanque_id, nome: b.nome, ativo: b.ativo }),
+  );
+}
+
+export async function salvarBomba(b: BombaConfig): Promise<void> {
+  const { error } = await supabase.from('bomba').upsert({
+    id: b.id,
+    tanque_id: b.tanqueId,
+    nome: b.nome,
+    ativo: b.ativo,
+  });
+  if (error) throw error;
+}
+
+export interface EntradaCombustivel {
+  id: string;
+  tanqueId: string;
+  litros: number;
+  custoLitroCentavos: Centavos;
+  data: string;
+  criadoEm: string;
+}
+
+export async function listarEntradasCombustivel(tanqueId: string): Promise<EntradaCombustivel[]> {
+  const { data, error } = await supabase
+    .from('entrada_combustivel')
+    .select('id,tanque_id,litros,custo_litro_centavos,data,criado_em')
+    .eq('tanque_id', tanqueId)
+    .order('data', { ascending: false })
+    .order('criado_em', { ascending: false });
+  if (error) throw error;
+  return ((data ?? []) as Array<{
+    id: string; tanque_id: string; litros: number; custo_litro_centavos: number; data: string; criado_em: string;
+  }>).map((e) => ({
+    id: e.id,
+    tanqueId: e.tanque_id,
+    litros: Number(e.litros),
+    custoLitroCentavos: paraCentavos(e.custo_litro_centavos),
+    data: e.data,
+    criadoEm: e.criado_em,
+  }));
+}
+
+export async function adicionarEntradaCombustivel(
+  id: string,
+  tanqueId: string,
+  litros: number,
+  custoLitroCentavos: Centavos,
+  data: string,
+): Promise<void> {
+  const { error } = await supabase.from('entrada_combustivel').insert({
+    id,
+    tanque_id: tanqueId,
+    litros,
+    custo_litro_centavos: centavosParaNumero(custoLitroCentavos),
+    data,
+  });
+  if (error) throw error;
+}
+
+export interface MedicaoTanque {
+  id: string;
+  tanqueId: string;
+  litrosMedidos: number;
+  dataHora: string;
+  observacao: string | null;
+}
+
+export async function listarMedicoesTanque(tanqueId: string): Promise<MedicaoTanque[]> {
+  const { data, error } = await supabase
+    .from('medicao_tanque')
+    .select('id,tanque_id,litros_medidos,data_hora,observacao')
+    .eq('tanque_id', tanqueId)
+    .order('data_hora', { ascending: false });
+  if (error) throw error;
+  return ((data ?? []) as Array<{
+    id: string; tanque_id: string; litros_medidos: number; data_hora: string; observacao: string | null;
+  }>).map((m) => ({
+    id: m.id,
+    tanqueId: m.tanque_id,
+    litrosMedidos: Number(m.litros_medidos),
+    dataHora: m.data_hora,
+    observacao: m.observacao,
+  }));
+}
+
+export async function adicionarMedicaoTanque(
+  id: string,
+  tanqueId: string,
+  litrosMedidos: number,
+  dataHora: string,
+  observacao: string | null,
+): Promise<void> {
+  const { error } = await supabase.from('medicao_tanque').insert({
+    id,
+    tanque_id: tanqueId,
+    litros_medidos: litrosMedidos,
+    data_hora: dataHora,
+    observacao: observacao && observacao.trim() ? observacao.trim() : null,
+  });
+  if (error) throw error;
+}
+
+export interface VigenciaCombustivel {
+  id: string;
+  combustivelId: string;
+  valorCentavos: Centavos;
+  validoAPartirDe: string;
+}
+
+export async function listarPrecosCombustivel(combustivelId: string): Promise<VigenciaCombustivel[]> {
+  const { data, error } = await supabase
+    .from('preco_combustivel')
+    .select('id,combustivel_id,valor_centavos,valido_a_partir_de')
+    .eq('combustivel_id', combustivelId)
+    .order('valido_a_partir_de', { ascending: false });
+  if (error) throw error;
+  return ((data ?? []) as Array<{
+    id: string; combustivel_id: string; valor_centavos: number; valido_a_partir_de: string;
+  }>).map((p) => ({
+    id: p.id,
+    combustivelId: p.combustivel_id,
+    valorCentavos: paraCentavos(p.valor_centavos),
+    validoAPartirDe: p.valido_a_partir_de,
+  }));
+}
+
+export async function adicionarPrecoCombustivel(
+  id: string,
+  combustivelId: string,
+  valorCentavos: Centavos,
+  validoAPartirDe: string,
+): Promise<void> {
+  const { error } = await supabase.from('preco_combustivel').insert({
+    id,
+    combustivel_id: combustivelId,
+    valor_centavos: centavosParaNumero(valorCentavos),
+    valido_a_partir_de: validoAPartirDe,
+  });
+  if (error) throw error;
+}
+
+export async function listarCustosCombustivel(combustivelId: string): Promise<VigenciaCombustivel[]> {
+  const { data, error } = await supabase
+    .from('custo_combustivel')
+    .select('id,combustivel_id,valor_centavos,valido_a_partir_de')
+    .eq('combustivel_id', combustivelId)
+    .order('valido_a_partir_de', { ascending: false });
+  if (error) throw error;
+  return ((data ?? []) as Array<{
+    id: string; combustivel_id: string; valor_centavos: number; valido_a_partir_de: string;
+  }>).map((c) => ({
+    id: c.id,
+    combustivelId: c.combustivel_id,
+    valorCentavos: paraCentavos(c.valor_centavos),
+    validoAPartirDe: c.valido_a_partir_de,
+  }));
+}
+
+export async function adicionarCustoCombustivel(
+  id: string,
+  combustivelId: string,
+  valorCentavos: Centavos,
+  validoAPartirDe: string,
+): Promise<void> {
+  const { error } = await supabase.from('custo_combustivel').insert({
+    id,
+    combustivel_id: combustivelId,
+    valor_centavos: centavosParaNumero(valorCentavos),
+    valido_a_partir_de: validoAPartirDe,
   });
   if (error) throw error;
 }
@@ -751,6 +1227,47 @@ export async function removerDespesa(id: string): Promise<void> {
   }
 
   const { error } = await supabase.from('movimento').delete().eq('id', id);
+  if (error) throw error;
+}
+
+export async function verificarFechamentoStatus(data: string): Promise<'aberto' | 'travado' | 'inexistente'> {
+  const { data: fech, error } = await supabase
+    .from('fechamento')
+    .select('status')
+    .eq('data', data)
+    .maybeSingle();
+  if (error) throw error;
+  if (!fech) return 'inexistente';
+  return fech.status === 'travado' || fech.status === 'confirmado' ? 'travado' : 'aberto';
+}
+
+export async function removerPrecoProduto(id: string): Promise<void> {
+  const { error } = await supabase.from('preco_produto').delete().eq('id', id);
+  if (error) throw error;
+}
+
+export async function removerCustoProduto(id: string): Promise<void> {
+  const { error } = await supabase.from('custo_produto').delete().eq('id', id);
+  if (error) throw error;
+}
+
+export async function removerEntradaMercadoria(id: string): Promise<void> {
+  const { error } = await supabase.from('entrada_mercadoria').delete().eq('id', id);
+  if (error) throw error;
+}
+
+export async function removerPrecoCombustivel(id: string): Promise<void> {
+  const { error } = await supabase.from('preco_combustivel').delete().eq('id', id);
+  if (error) throw error;
+}
+
+export async function removerCustoCombustivel(id: string): Promise<void> {
+  const { error } = await supabase.from('custo_combustivel').delete().eq('id', id);
+  if (error) throw error;
+}
+
+export async function removerEntradaCombustivel(id: string): Promise<void> {
+  const { error } = await supabase.from('entrada_combustivel').delete().eq('id', id);
   if (error) throw error;
 }
 
@@ -1703,12 +2220,14 @@ export interface ResumoFechamentoCompleto {
   aDepositar: Centavos;
   fiadoConcedido: Centavos;
   fiadoRecebido: Centavos;
+  observacao?: string | null;
+  responsavelFotoUrl?: string | null;
 }
 
 export async function obterDadosUltimoFechamento(): Promise<ResumoFechamentoCompleto | null> {
   const { data: fechRaw, error: e1 } = await supabase
     .from('fechamento')
-    .select('id, data, responsavel:responsavel_id(nome), status')
+    .select('id, data, responsavel:responsavel_id(nome, foto_url), status, observacao')
     .eq('status', 'travado')
     .order('data', { ascending: false })
     .limit(1);
@@ -1804,6 +2323,8 @@ export async function obterDadosUltimoFechamento(): Promise<ResumoFechamentoComp
     aDepositar: asCentavos(aDepositar),
     fiadoConcedido: asCentavos(fiadoConcedido),
     fiadoRecebido: asCentavos(fiadoRecebido),
+    observacao: ultimo.observacao ?? null,
+    responsavelFotoUrl: resp?.foto_url ?? null,
   };
 }
 

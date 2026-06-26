@@ -5,6 +5,7 @@ import { formatLitros } from '../../domain/tipos';
 import { litrosParaMililitros } from '../../data/conversao';
 import { MedidorTanque } from '../../components/MedidorTanque';
 import { useCoresTema } from '../../hooks/useCoresTema';
+import { Avatar } from '../../components/ui/Avatar';
 import {
   listarTanques,
   obterCapitalDashboard,
@@ -300,72 +301,79 @@ export function Painel({ usuario }: { usuario: UsuarioAtual }) {
             <>
               {/* Caixa de Fechamento Pendente com Resumo do Último Dia (Banner Compacto) */}
               {!fechamentoHojeFeito && dados.ultimoFechamento && (
-                <section className="animar-surgir rounded-xl border border-ambar/20 bg-ambar/[0.02] p-4 shadow-sm flex flex-col gap-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-borda/30 pb-2">
-                    <div className="flex items-center gap-2">
-                      <span className="h-1.5 w-1.5 rounded-full bg-ambar animate-pulse" />
-                      <h2 className="text-xs font-bold text-claro uppercase tracking-wider">Fechamento de hoje pendente</h2>
+                <section className="animar-surgir rounded-2xl border border-ambar/25 bg-gradient-to-r from-ambar/[0.01] to-ambar/[0.04] p-5 sm:p-6 shadow-md flex flex-col gap-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-borda/40 pb-3">
+                    <div className="flex items-center gap-2.5">
+                      <span className="h-2 w-2 rounded-full bg-ambar animate-pulse" />
+                      <h2 className="text-sm font-bold text-claro uppercase tracking-wider">Fechamento de hoje pendente</h2>
                     </div>
-                    <span className="text-[10px] text-suave">
-                      Exibindo último fechamento ({new Date(dados.ultimoFechamento.data + 'T00:00:00').toLocaleDateString('pt-BR')}) por <strong>{dados.ultimoFechamento.responsavelNome ?? 'Sistema'}</strong>
-                    </span>
+                    <div className="flex items-center gap-2 text-xs text-suave">
+                      <span>Fechado por:</span>
+                      <Avatar
+                        nome={dados.ultimoFechamento.responsavelNome ?? 'Sistema'}
+                        fotoUrl={dados.ultimoFechamento.responsavelFotoUrl}
+                        size="xs"
+                      />
+                    </div>
                   </div>
                   
-                  <div className="grid gap-3 grid-cols-2 sm:grid-cols-5 text-xs select-none">
+                  <div className="flex flex-wrap gap-4 text-sm select-none">
                     {/* Card Venda Física */}
                     <button
                       type="button"
                       onClick={() => alternarAbaDetalhe('vendas')}
-                      className={`flex flex-col text-left p-3.5 rounded-xl border transition-all duration-300 cursor-pointer ${
+                      className={`flex flex-col text-left p-4 rounded-xl border transition-all duration-300 cursor-pointer flex-1 min-w-[120px] sm:min-w-[140px] ${
                         detalheFechamentoAba === 'vendas'
                           ? 'bg-ardosia border-borda/80 shadow-inner scale-[0.98]'
                           : 'border-borda/30 bg-ardosia/20 hover:border-borda/80 hover:bg-ardosia/40 hover:shadow-md hover:-translate-y-0.5'
                       }`}
                     >
-                      <span className="text-[10px] text-suave uppercase">Venda Física</span>
-                      <span className="numeros font-bold text-claro mt-1.5">{formatReais(dados.ultimoFechamento.vendaFisica)}</span>
+                      <span className="text-[11px] font-semibold text-suave uppercase tracking-wider">Venda Física</span>
+                      <span className="numeros text-lg font-bold text-claro mt-2">{formatReais(dados.ultimoFechamento.vendaFisica)}</span>
                     </button>
 
                     {/* Card Despesas */}
                     <button
                       type="button"
                       onClick={() => alternarAbaDetalhe('despesas')}
-                      className={`flex flex-col text-left p-3.5 rounded-xl border transition-all duration-300 cursor-pointer ${
+                      className={`flex flex-col text-left p-4 rounded-xl border transition-all duration-300 cursor-pointer flex-1 min-w-[120px] sm:min-w-[140px] ${
                         detalheFechamentoAba === 'despesas'
                           ? 'bg-ardosia border-borda/80 shadow-inner scale-[0.98]'
                           : 'border-borda/30 bg-ardosia/20 hover:border-borda/80 hover:bg-ardosia/40 hover:shadow-md hover:-translate-y-0.5'
                       }`}
                     >
-                      <span className="text-[10px] text-suave uppercase">Despesas ($)</span>
-                      <span className="numeros font-bold text-claro mt-1.5">{formatReais(dados.ultimoFechamento.despesa)}</span>
+                      <span className="text-[11px] font-semibold text-suave uppercase tracking-wider">Despesas ($)</span>
+                      <span className="numeros text-lg font-bold text-claro mt-2">{formatReais(dados.ultimoFechamento.despesa)}</span>
                     </button>
 
                     {/* Card Fiado */}
-                    <button
-                      type="button"
-                      onClick={() => alternarAbaDetalhe('fiado')}
-                      className={`flex flex-col text-left p-3.5 rounded-xl border transition-all duration-300 cursor-pointer ${
-                        detalheFechamentoAba === 'fiado'
-                          ? 'bg-ardosia border-borda/80 shadow-inner scale-[0.98]'
-                          : 'border-borda/30 bg-ardosia/20 hover:border-borda/80 hover:bg-ardosia/40 hover:shadow-md hover:-translate-y-0.5'
-                      }`}
-                    >
-                      <span className="text-[10px] text-suave uppercase">Fiado Concedido</span>
-                      <span className="numeros font-bold text-claro mt-1.5">{formatReais(dados.ultimoFechamento.fiadoConcedido)}</span>
-                    </button>
+                    {dados.ultimoFechamento.fiadoConcedido > 0n && (
+                      <button
+                        type="button"
+                        onClick={() => alternarAbaDetalhe('fiado')}
+                        className={`flex flex-col text-left p-4 rounded-xl border transition-all duration-300 cursor-pointer flex-1 min-w-[120px] sm:min-w-[140px] ${
+                          detalheFechamentoAba === 'fiado'
+                            ? 'bg-ardosia border-borda/80 shadow-inner scale-[0.98]'
+                            : 'border-borda/30 bg-ardosia/20 hover:border-borda/80 hover:bg-ardosia/40 hover:shadow-md hover:-translate-y-0.5'
+                        }`}
+                      >
+                        <span className="text-[11px] font-semibold text-suave uppercase tracking-wider">Fiado (+)</span>
+                        <span className="numeros text-lg font-bold text-claro mt-2">{formatReais(dados.ultimoFechamento.fiadoConcedido)}</span>
+                      </button>
+                    )}
 
                     {/* Card Diferença */}
                     <button
                       type="button"
                       onClick={() => alternarAbaDetalhe('diferenca')}
-                      className={`flex flex-col text-left p-3.5 rounded-xl border transition-all duration-300 cursor-pointer ${
+                      className={`flex flex-col text-left p-4 rounded-xl border transition-all duration-300 cursor-pointer flex-1 min-w-[120px] sm:min-w-[140px] ${
                         detalheFechamentoAba === 'diferenca'
                           ? 'bg-ardosia border-borda/80 shadow-inner scale-[0.98]'
                           : 'border-borda/30 bg-ardosia/20 hover:border-borda/80 hover:bg-ardosia/40 hover:shadow-md hover:-translate-y-0.5'
                       }`}
                     >
-                      <span className="text-[10px] text-suave uppercase">Diferença</span>
-                      <span className={`numeros font-bold mt-1.5 ${
+                      <span className="text-[11px] font-semibold text-suave uppercase tracking-wider">Diferença</span>
+                      <span className={`numeros text-lg font-bold mt-2 ${
                         dados.ultimoFechamento.diferenca < 0n
                           ? 'text-negativo'
                           : dados.ultimoFechamento.diferenca > 0n
@@ -380,20 +388,20 @@ export function Painel({ usuario }: { usuario: UsuarioAtual }) {
                     <button
                       type="button"
                       onClick={() => alternarAbaDetalhe('depositar')}
-                      className={`flex flex-col text-left p-3.5 rounded-xl border transition-all duration-300 cursor-pointer ${
+                      className={`flex flex-col text-left p-4 rounded-xl border transition-all duration-300 cursor-pointer flex-1 min-w-[120px] sm:min-w-[140px] ${
                         detalheFechamentoAba === 'depositar'
-                          ? 'bg-ambar/15 border-ambar/30 shadow-inner scale-[0.98]'
-                          : 'bg-ambar/5 border-ambar/15 hover:border-ambar/30 hover:bg-ambar/10 hover:shadow-md hover:-translate-y-0.5'
+                          ? 'bg-positivo/15 border-positivo/30 shadow-inner scale-[0.98]'
+                          : 'bg-positivo/5 border-positivo/15 hover:border-positivo/30 hover:bg-positivo/10 hover:shadow-md hover:-translate-y-0.5'
                       }`}
                     >
-                      <span className="text-[9px] text-ambar font-semibold uppercase">Valor a Depositar</span>
-                      <span className="numeros font-extrabold text-ambar mt-1.5">{formatReais(dados.ultimoFechamento.aDepositar)}</span>
+                      <span className="text-[11px] text-positivo font-bold uppercase tracking-wider">A Depositar</span>
+                      <span className="numeros text-lg font-extrabold text-positivo mt-2">{formatReais(dados.ultimoFechamento.aDepositar)}</span>
                     </button>
                   </div>
 
                   {/* Área de Detalhes Expandida */}
                   {detalheFechamentoAba && (
-                    <div className="animar-surgir mt-2 p-3 bg-ardosia/30 rounded-lg border border-borda/30 text-xs text-claro/90">
+                    <div className="animar-surgir mt-3 p-4 bg-ardosia/40 rounded-xl border border-borda/40 text-sm text-claro/90">
                       {carregandoDetalhe ? (
                         <div className="flex items-center justify-center py-4 gap-2 text-suave">
                           <svg className="animate-spin h-4 w-4 text-ambar" fill="none" viewBox="0 0 24 24">
@@ -405,44 +413,44 @@ export function Painel({ usuario }: { usuario: UsuarioAtual }) {
                       ) : (
                         <>
                           {detalheFechamentoAba === 'vendas' && (
-                            <div className="space-y-2">
-                              <h4 className="font-bold border-b border-borda/20 pb-1 text-claro uppercase text-[10px]">Detalhamento de Recebimentos</h4>
-                              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 py-1">
+                            <div className="space-y-2.5">
+                              <h4 className="font-semibold border-b border-borda/20 pb-1.5 text-suave uppercase text-xs tracking-wider">Detalhamento de Recebimentos</h4>
+                              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 py-1.5">
                                 <div>
-                                  <span className="text-suave block text-[9px] uppercase">Dinheiro (Caixa)</span>
-                                  <span className="numeros font-semibold">{formatReais(dados.ultimoFechamento.dinheiro)}</span>
+                                  <span className="text-suave block text-xs uppercase font-medium">Dinheiro (Caixa)</span>
+                                  <span className="numeros text-sm font-semibold text-claro">{formatReais(dados.ultimoFechamento.dinheiro)}</span>
                                 </div>
                                 <div>
-                                  <span className="text-suave block text-[9px] uppercase">PIX</span>
-                                  <span className="numeros font-semibold">{formatReais(dados.ultimoFechamento.pix)}</span>
+                                  <span className="text-suave block text-xs uppercase font-medium">PIX</span>
+                                  <span className="numeros text-sm font-semibold text-claro">{formatReais(dados.ultimoFechamento.pix)}</span>
                                 </div>
                                 <div>
-                                  <span className="text-suave block text-[9px] uppercase">Cartão de Débito</span>
-                                  <span className="numeros font-semibold">{formatReais(dados.ultimoFechamento.debito)}</span>
+                                  <span className="text-suave block text-xs uppercase font-medium">Cartão de Débito</span>
+                                  <span className="numeros text-sm font-semibold text-claro">{formatReais(dados.ultimoFechamento.debito)}</span>
                                 </div>
                                 <div>
-                                  <span className="text-suave block text-[9px] uppercase">Cartão de Crédito</span>
-                                  <span className="numeros font-semibold">{formatReais(dados.ultimoFechamento.credito)}</span>
+                                  <span className="text-suave block text-xs uppercase font-medium">Cartão de Crédito</span>
+                                  <span className="numeros text-sm font-semibold text-claro">{formatReais(dados.ultimoFechamento.credito)}</span>
                                 </div>
                               </div>
-                              <p className="text-[10px] text-suave border-t border-borda/10 pt-1.5 mt-1">
+                              <p className="text-xs text-suave border-t border-borda/10 pt-2 mt-1">
                                 * Venda Física total (R$ {formatReais(dados.ultimoFechamento.vendaFisica)}) inclui recebimentos em dinheiro, PIX, débito, crédito e fiados concedidos (R$ {formatReais(dados.ultimoFechamento.fiadoConcedido)}).
                               </p>
                             </div>
                           )}
 
                           {detalheFechamentoAba === 'despesas' && (
-                            <div className="space-y-2">
-                              <h4 className="font-bold border-b border-borda/20 pb-1 text-claro uppercase text-[10px]">Movimentos de Saída do Caixa ($)</h4>
+                            <div className="space-y-2.5">
+                              <h4 className="font-semibold border-b border-borda/20 pb-1.5 text-suave uppercase text-xs tracking-wider">Movimentos de Saída do Caixa ($)</h4>
                               {movimentosDetalhe.length === 0 ? (
-                                <p className="text-suave py-2 text-center">Nenhuma despesa ou retirada registrada neste fechamento.</p>
+                                <p className="text-suave py-2 text-center text-xs">Nenhuma despesa ou retirada registrada neste fechamento.</p>
                               ) : (
                                 <div className="max-h-[160px] overflow-y-auto divide-y divide-borda/20 pr-1">
                                   {movimentosDetalhe.map((m, idx) => (
-                                    <div key={idx} className="flex justify-between py-1.5 text-[11px] last:pb-0">
+                                    <div key={idx} className="flex justify-between py-2 text-xs last:pb-0">
                                       <div className="min-w-0 flex-1 mr-2">
                                         <p className="font-medium text-claro truncate">{m.descricao || 'Sem descrição'}</p>
-                                        <span className="text-[9px] text-suave font-semibold uppercase tracking-wider">
+                                        <span className="text-[10px] text-suave font-semibold uppercase tracking-wider">
                                           {m.tipo === 'prolabore' ? 'Retirada de Sócio' : m.tipo === 'vale' ? 'Vale Salário' : 'Despesa'} ({m.formaPagamento})
                                         </span>
                                       </div>
@@ -457,14 +465,14 @@ export function Painel({ usuario }: { usuario: UsuarioAtual }) {
                           )}
 
                           {detalheFechamentoAba === 'fiado' && (
-                            <div className="space-y-2">
-                              <h4 className="font-bold border-b border-borda/20 pb-1 text-claro uppercase text-[10px]">Fiados Concedidos no Dia</h4>
+                            <div className="space-y-2.5">
+                              <h4 className="font-semibold border-b border-borda/20 pb-1.5 text-suave uppercase text-xs tracking-wider">Fiados Concedidos no Dia</h4>
                               {fiadosDetalhe.length === 0 ? (
-                                <p className="text-suave py-2 text-center">Nenhuma venda fiado realizada neste fechamento.</p>
+                                <p className="text-suave py-2 text-center text-xs">Nenhuma venda fiado realizada neste fechamento.</p>
                               ) : (
                                 <div className="max-h-[160px] overflow-y-auto divide-y divide-borda/20 pr-1">
                                   {fiadosDetalhe.map((f, idx) => (
-                                    <div key={idx} className="flex justify-between py-1.5 text-[11px] last:pb-0">
+                                    <div key={idx} className="flex justify-between py-2 text-xs last:pb-0">
                                       <span className="font-medium text-claro truncate mr-2">{f.clienteNome}</span>
                                       <span className="numeros font-bold text-claro/80 text-right shrink-0">
                                         {formatReais(f.valor)}
@@ -477,21 +485,24 @@ export function Painel({ usuario }: { usuario: UsuarioAtual }) {
                           )}
 
                           {detalheFechamentoAba === 'diferenca' && (
-                            <div className="space-y-1 leading-relaxed">
-                              <h4 className="font-bold border-b border-borda/20 pb-1 text-claro uppercase text-[10px]">Análise de Diferença de Caixa</h4>
-                              <p className="pt-1">
-                                A diferença de caixa de <strong className={dados.ultimoFechamento.diferenca < 0n ? 'text-negativo' : dados.ultimoFechamento.diferenca > 0n ? 'text-positivo' : 'text-claro'}>{formatReais(dados.ultimoFechamento.diferenca)}</strong> representa o desvio entre o dinheiro real contado na gaveta e o valor esperado teoricamente pelo sistema.
-                              </p>
-                              <p className="text-suave text-[10px] mt-1.5">
-                                * Diferenças podem ocorrer devido a erros de troco, arredondamentos ou quebras de caixa não registradas.
-                              </p>
+                            <div className="space-y-2">
+                              <h4 className="font-semibold border-b border-borda/20 pb-1.5 text-suave uppercase text-xs tracking-wider">Justificativa / Observação</h4>
+                              {dados.ultimoFechamento.observacao ? (
+                                <p className="text-claro bg-claro/5 p-2.5 rounded-lg border border-borda/20 italic text-xs leading-relaxed">
+                                  "{dados.ultimoFechamento.observacao}"
+                                </p>
+                              ) : (
+                                <p className="text-suave text-xs">
+                                  Sem observações registradas. A diferença de <span className={dados.ultimoFechamento.diferenca < 0n ? 'text-negativo font-bold' : dados.ultimoFechamento.diferenca > 0n ? 'text-positivo font-bold' : 'text-suave font-bold'}>{formatReais(dados.ultimoFechamento.diferenca)}</span> é o desvio entre o esperado e o contado.
+                                </p>
+                              )}
                             </div>
                           )}
 
                           {detalheFechamentoAba === 'depositar' && (
-                            <div className="space-y-2">
-                              <h4 className="font-bold border-b border-borda/20 pb-1 text-ambar uppercase text-[10px]">Fórmula de Cálculo do Depósito</h4>
-                              <div className="space-y-1.5 text-[11px] font-mono leading-normal bg-ardosia/20 p-2 rounded border border-borda/10">
+                            <div className="space-y-2.5">
+                              <h4 className="font-semibold border-b border-borda/20 pb-1.5 text-positivo uppercase text-xs tracking-wider">Fórmula de Cálculo do Depósito</h4>
+                              <div className="space-y-2 text-xs font-mono leading-normal bg-ardosia/20 p-3 rounded-lg border border-borda/10">
                                 <div className="flex justify-between">
                                   <span className="text-suave">(+) Vendas em Dinheiro:</span>
                                   <span className="numeros">{formatReais(dados.ultimoFechamento.dinheiro)}</span>
@@ -508,7 +519,7 @@ export function Painel({ usuario }: { usuario: UsuarioAtual }) {
                                   <span className="text-suave">(+) Troco Fixo de Abertura:</span>
                                   <span className="numeros">+{formatReais(asCentavos(BigInt(dados.ultimoFechamento.esperado) - BigInt(dados.ultimoFechamento.dinheiro) + BigInt(dados.ultimoFechamento.despesa) - BigInt(dados.ultimoFechamento.fiadoRecebido)))}</span>
                                 </div>
-                                <div className="flex justify-between border-t border-borda/20 pt-1 font-bold">
+                                <div className="flex justify-between border-t border-borda/20 pt-1.5 font-bold">
                                   <span className="text-claro">(=) Dinheiro Esperado:</span>
                                   <span className="numeros">{formatReais(dados.ultimoFechamento.esperado)}</span>
                                 </div>
@@ -518,7 +529,7 @@ export function Painel({ usuario }: { usuario: UsuarioAtual }) {
                                     {dados.ultimoFechamento.diferenca >= 0n ? '+' : ''}{formatReais(dados.ultimoFechamento.diferenca)}
                                   </span>
                                 </div>
-                                <div className="flex justify-between border-t border-borda/20 pt-1 font-bold">
+                                <div className="flex justify-between border-t border-borda/20 pt-1.5 font-bold">
                                   <span className="text-claro">(=) Total Contado:</span>
                                   <span className="numeros">{formatReais(dados.ultimoFechamento.contado)}</span>
                                 </div>
@@ -526,9 +537,9 @@ export function Painel({ usuario }: { usuario: UsuarioAtual }) {
                                   <span className="text-suave">(-) Retenção de Troco Fixo:</span>
                                   <span className="numeros">-{formatReais(asCentavos(BigInt(dados.ultimoFechamento.esperado) - BigInt(dados.ultimoFechamento.dinheiro) + BigInt(dados.ultimoFechamento.despesa) - BigInt(dados.ultimoFechamento.fiadoRecebido)))}</span>
                                 </div>
-                                <div className="flex justify-between border-t border-ambar/30 pt-1 font-extrabold text-ambar">
+                                <div className="flex justify-between border-t border-positivo/30 pt-2 font-bold text-positivo">
                                   <span>(=) Valor Líquido a Depositar:</span>
-                                  <span className="numeros">{formatReais(dados.ultimoFechamento.aDepositar)}</span>
+                                  <span className="numeros text-base font-extrabold">{formatReais(dados.ultimoFechamento.aDepositar)}</span>
                                 </div>
                               </div>
                             </div>

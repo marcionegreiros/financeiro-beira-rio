@@ -4,7 +4,7 @@ import { Fechamento } from './fechamento/Fechamento';
 import { sair } from '../data/sessao';
 import type { UsuarioAtual } from '../data/usuario';
 
-import { Produtos } from './catalogo/Produtos';
+import { ProdutosCombustivel } from './catalogo/ProdutosCombustivel';
 import { Configuracoes } from './catalogo/Configuracoes';
 import { ContasETransferencias } from './financeiro/ContasETransferencias';
 import { Despesas } from './financeiro/Despesas';
@@ -49,7 +49,7 @@ const ICONES: Record<Tela | 'sair', (className: string) => ReactNode> = {
   ),
   produtos: (className) => (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3 21h8M5 21V5a2 2 0 012-2h2a2 2 0 012 2v16M5 11h6m4-3l3 3v8a2 2 0 01-2 2 2 2 0 01-2-2v-3a1 1 0 00-1-1h-1m4-4V6a1 1 0 00-1-1" />
     </svg>
   ),
   configuracoes: (className) => (
@@ -169,7 +169,13 @@ export function Shell({ usuario }: { usuario: UsuarioAtual }) {
   const podeCadastrarProduto = usuario.permissoes.has('cadastrar_produto');
   // A tela de Produtos abre para quem cadastra produto OU só ajusta preço/custo
   // (vendedor) — a própria tela esconde as ações que cada um não pode (§5.6).
-  const podeVerProdutos = podeCadastrarProduto || usuario.permissoes.has('definir_preco_custo');
+  // "Produtos" no menu reúne combustível (cargas/medições/config) e mercadorias
+  // (cadastro/estoque) — abre para quem gerencia qualquer um dos dois OU só
+  // ajusta preço/custo (vendedor); a própria tela esconde o que cada um não pode.
+  const podeVerProdutos =
+    podeCadastrarProduto ||
+    usuario.permissoes.has('definir_preco_custo') ||
+    usuario.permissoes.has('gerenciar_combustivel');
   const podeGerenciarContas = usuario.permissoes.has('gerenciar_contas');
   const podeEditarConfig = usuario.permissoes.has('editar_configuracoes');
 
@@ -408,7 +414,7 @@ export function Shell({ usuario }: { usuario: UsuarioAtual }) {
           {tela === 'socios' && podeGerenciarSocios && <Socios usuarioId={usuario.id} />}
           {tela === 'fiado' && podeGerenciarFiado && <Fiado usuarioId={usuario.id} />}
           {tela === 'folha' && podeGerenciarFuncionarios && <Folha usuarioId={usuario.id} />}
-          {tela === 'produtos' && podeVerProdutos && <Produtos usuario={usuario} />}
+          {tela === 'produtos' && podeVerProdutos && <ProdutosCombustivel usuario={usuario} />}
           {tela === 'configuracoes' && podeEditarConfig && (
             <Configuracoes tema={theme} aoTrocarTema={alterarTema} />
           )}

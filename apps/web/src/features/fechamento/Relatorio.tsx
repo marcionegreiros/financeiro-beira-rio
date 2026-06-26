@@ -80,8 +80,8 @@ export function Relatorio({
         <Item rotulo="Débito" valor={dados.debito} />
         <Item rotulo="Crédito" valor={dados.credito} />
         <Item rotulo="Despesa $" valor={dados.despesa} />
-        <Item rotulo="Fiado Conc." valor={dados.fiadoConcedido} />
-        <Item rotulo="Fiado Rec." valor={dados.fiadoRecebido} />
+        <Item rotulo="Fiado (+)" valor={dados.fiadoConcedido} />
+        <Item rotulo="Fiado (-)" valor={dados.fiadoRecebido} />
         <Item rotulo="Esperado" valor={dados.esperado} />
         <Item rotulo="Contado" valor={dados.contado} />
         <Item
@@ -91,9 +91,9 @@ export function Relatorio({
         />
       </section>
 
-      <section className="rounded-2xl border border-ambar/40 bg-ambar/10 p-5">
-        <p className="text-xs uppercase tracking-wide text-ambar">Valor a depositar</p>
-        <p className="numeros mt-1 text-3xl font-bold text-ambar">
+      <section className="rounded-2xl border border-positivo/40 bg-positivo/10 p-5">
+        <p className="text-xs uppercase tracking-wide text-positivo">Valor a depositar</p>
+        <p className="numeros mt-1 text-3xl font-bold text-positivo">
           {formatReais(dados.aDepositar)}
         </p>
       </section>

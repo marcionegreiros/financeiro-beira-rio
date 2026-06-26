@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type FormEvent, Fragment } from 'react';
 import {
   parseReais,
   formatReais,
@@ -550,7 +550,7 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
       setRelatorio({
         data: ctx.data,
         bombas: calc.bombas.map((b) => ({
-          nome: b.combustivel,
+          nome: `${b.combustivel} (${b.nome})`,
           litrosMl: b.litrosMl,
           valor: b.valor,
         })),
@@ -584,7 +584,7 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
       return {
         data: ctx.data,
         bombas: calc.bombas.map((b) => ({
-          nome: b.combustivel,
+          nome: `${b.combustivel} (${b.nome})`,
           litrosMl: b.litrosMl,
           valor: b.valor,
         })),
@@ -612,12 +612,34 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
     return <div className="cartao p-6 text-sm text-negativo">Erro ao carregar o fechamento: {erroCarga}</div>;
   if (!ctx || !calc) return <p className="p-6 text-sm text-suave">Carregando fechamento…</p>;
 
+  const statusBadge = ctx.status ? (
+    <span
+      className={`inline-flex shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${
+        ctx.status === 'travado' ? 'bg-positivo/15 text-positivo' : 'bg-atencao/15 text-atencao'
+      }`}
+    >
+      {ctx.status === 'travado' ? 'Fechamento travado' : 'Rascunho aberto'}
+    </span>
+  ) : null;
+
   const cabecalho = (
-    <PageHeader
-      titulo="Fechamento de caixa"
-      subtitulo="Conferência diária de vendas, pagamentos e caixa"
-      acao={<AbaSwitch aba={aba} aoTrocar={setAba} />}
-    />
+    <div className="flex flex-col gap-4 border-b border-borda/50 pb-4 mb-2">
+      <PageHeader
+        titulo="Fechamento de caixa"
+        subtitulo="Conferência diária de vendas, pagamentos e caixa"
+        acao={<AbaSwitch aba={aba} aoTrocar={setAba} />}
+      />
+      {aba === 'fechar' && (
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <SeletorData
+            dataSelecionada={dataSelecionada}
+            aoMudar={setDataSelecionada}
+            recentes={recentes}
+          />
+          {statusBadge}
+        </div>
+      )}
+    </div>
   );
 
   const modalReabrir = (
@@ -688,21 +710,12 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
     );
   }
 
-  const statusBadge = ctx.status ? (
-    <span
-      className={`inline-flex shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${
-        ctx.status === 'travado' ? 'bg-positivo/15 text-positivo' : 'bg-atencao/15 text-atencao'
-      }`}
-    >
-      {ctx.status === 'travado' ? 'Fechamento travado' : 'Rascunho aberto'}
-    </span>
-  ) : null;
+
 
   if (relatorioParaExibir) {
     return (
       <div className="flex flex-col gap-6">
         {cabecalho}
-        <SeletorData dataSelecionada={dataSelecionada} aoMudar={setDataSelecionada} recentes={recentes} badge={statusBadge} />
         <Relatorio
           dados={relatorioParaExibir}
           aoFechar={() => setDataSelecionada(hojeManaus())}
@@ -720,18 +733,12 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
   return (
     <div className="flex flex-col gap-6">
       {cabecalho}
-      <SeletorData dataSelecionada={dataSelecionada} aoMudar={setDataSelecionada} recentes={recentes} badge={statusBadge} />
 
       {!isOnline && (
         <div className="rounded-xl border border-negativo/30 bg-negativo/10 p-4 text-sm text-negativo">
           Você está offline. Não é possível confirmar fechamentos sem conexão com a internet.
         </div>
       )}
-
-      <header>
-        <h2 className="font-display text-xl font-bold text-claro">Fechamento de {formatarDataBR(ctx.data)}</h2>
-        <p className="text-sm text-suave">Enter avança para o próximo campo, na ordem da contagem.</p>
-      </header>
 
       {/* Combustível */}
       <section className="cartao p-5">
@@ -750,8 +757,10 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
             {calc.bombas.map((b) => {
               const meu = idx++;
               return (
-                <tr key={b.id} className="border-t border-borda">
-                  <td className="py-2 text-claro">{b.combustivel}</td>
+                <tr key={b.id} className="border-t border-borda/60 hover:bg-claro/[0.02] transition-colors">
+                  <td className="py-2 text-claro">
+                    {b.combustivel} <span className="text-xs text-suave">({b.nome})</span>
+                  </td>
                   <td className="numeros py-2 text-right text-claro/60">
                     {formatarLeituraAnterior(b.leituraAnterior)}
                   </td>
@@ -801,7 +810,7 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
             {calc.produtos.map((p) => {
               const meu = idx++;
               return (
-                <tr key={p.id} className="border-t border-borda">
+                <tr key={p.id} className="border-t border-borda/60 hover:bg-claro/[0.02] transition-colors">
                   <td className="py-2 text-claro">{p.nome}</td>
                   <td className="numeros py-2 text-right text-claro/60">
                     {String(p.estoqueAnterior)}
@@ -849,7 +858,7 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
               {calc.ind.map((p) => {
                 const meu = idx++;
                 return (
-                  <tr key={p.id} className="border-t border-borda">
+                  <tr key={p.id} className="border-t border-borda/60 hover:bg-claro/[0.02] transition-colors">
                     <td className="py-2 text-claro">{p.nome}</td>
                     <td className="py-2 text-right">
                       <input
@@ -925,45 +934,61 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
             Nenhuma despesa lançada neste dia.
           </p>
         ) : (
-          <table className="w-full text-sm">
+          <table className="w-full text-sm border-collapse">
             <thead>
-              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-suave">
-                <th className="pb-2 font-medium">Descrição</th>
-                <th className="pb-2 font-medium">Categoria</th>
+              <tr className="text-left text-xs font-semibold uppercase tracking-wide text-suave border-b border-borda/60">
+                <th className="pb-2 pl-2 font-medium">Descrição</th>
                 <th className="pb-2 font-medium">Forma</th>
                 <th className="pb-2 text-right font-medium">Valor</th>
-                <th className="pb-2"><span className="sr-only">Ações</span></th>
+                <th className="pb-2 text-right pr-2"><span className="sr-only">Ações</span></th>
               </tr>
             </thead>
             <tbody>
-              {despesasDoDia.map((d) => {
-                const ehDinheiro = d.formaPagamento === 'dinheiro';
-                return (
-                  <tr key={d.id} className="border-t border-borda">
-                    <td className="py-2 text-claro">{d.descricao || '—'}</td>
-                    <td className="py-2 text-suave">{d.categoriaNome ?? '—'}</td>
-                    <td className="py-2 text-suave">
-                      {FORMAS_PAGAMENTO[d.formaPagamento ?? ''] ?? d.formaPagamento ?? '—'}
-                      {!ehDinheiro && <span className="ml-1 text-xs text-suave/70">(não sai da gaveta)</span>}
-                    </td>
-                    <td className={`numeros py-2 text-right ${ehDinheiro ? 'text-negativo' : 'text-suave'}`}>
-                      {formatReais(d.valor)}
-                    </td>
-                    <td className="py-2 text-right">
-                      <button
-                        type="button"
-                        aria-label="Remover despesa"
-                        onClick={() => void excluirDespesa(d.id)}
-                        className="text-suave hover:text-negativo"
-                      >
-                        ✕
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
+              {(() => {
+                const despesasAgrupadas = despesasDoDia.reduce<Record<string, DespesaDoDia[]>>((acc, d) => {
+                  const cat = d.categoriaNome || 'Outras despesas';
+                  if (!acc[cat]) acc[cat] = [];
+                  acc[cat].push(d);
+                  return acc;
+                }, {});
+
+                return Object.entries(despesasAgrupadas).map(([categoria, lista]) => (
+                  <Fragment key={categoria}>
+                    <tr className="bg-claro/[0.01]">
+                      <td colSpan={4} className="py-2 px-2 text-xs font-bold uppercase tracking-wider text-suave bg-borda/10 border-t border-borda/40">
+                        {categoria}
+                      </td>
+                    </tr>
+                    {lista.map((d) => {
+                      const ehDinheiro = d.formaPagamento === 'dinheiro';
+                      return (
+                        <tr key={d.id} className="border-t border-borda/30 hover:bg-claro/[0.02] transition-colors">
+                          <td className="py-2 pl-4 text-claro">{d.descricao || '—'}</td>
+                          <td className="py-2 text-suave">
+                            {FORMAS_PAGAMENTO[d.formaPagamento ?? ''] ?? d.formaPagamento ?? '—'}
+                            {!ehDinheiro && <span className="ml-1 text-xs text-suave/70">(não sai da gaveta)</span>}
+                          </td>
+                          <td className={`numeros py-2 text-right ${ehDinheiro ? 'text-negativo' : 'text-suave'}`}>
+                            {formatReais(d.valor)}
+                          </td>
+                          <td className="py-2 text-right pr-2">
+                            <button
+                              type="button"
+                              aria-label="Remover despesa"
+                              onClick={() => void excluirDespesa(d.id)}
+                              className="text-suave hover:text-negativo"
+                            >
+                              ✕
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </Fragment>
+                ));
+              })()}
               <tr className="border-t border-borda">
-                <td className="py-2 font-semibold text-claro" colSpan={3}>
+                <td className="py-2 pl-2 font-semibold text-claro" colSpan={2}>
                   Total em dinheiro (sai da gaveta)
                 </td>
                 <td className="numeros py-2 text-right font-semibold text-negativo">
@@ -1203,9 +1228,9 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
         </div>
 
         {/* A depositar (em destaque na direita) */}
-        <div className="rounded-xl border border-ambar/50 bg-ambar/[0.06] p-4 flex flex-col justify-center shadow-sm shadow-ambar/5">
-          <p className="text-xs font-semibold uppercase tracking-wide text-ambar">A depositar</p>
-          <p className="numeros mt-1 text-3xl font-extrabold text-ambar">{formatReais(calc.aDepositar)}</p>
+        <div className="rounded-xl border border-positivo/50 bg-positivo/[0.06] p-4 flex flex-col justify-center shadow-sm shadow-positivo/5">
+          <p className="text-xs font-semibold uppercase tracking-wide text-positivo">A depositar</p>
+          <p className="numeros mt-1 text-3xl font-extrabold text-positivo">{formatReais(calc.aDepositar)}</p>
         </div>
       </section>
 
@@ -1379,46 +1404,82 @@ function AbaSwitch({
 function SeletorData({
   dataSelecionada,
   aoMudar,
-  recentes,
-  badge,
 }: {
   dataSelecionada: string;
   aoMudar: (d: string) => void;
   recentes: FechamentoRecente[];
-  badge: ReactNode;
 }) {
+  function diaAnterior() {
+    const d = new Date(dataSelecionada + 'T12:00:00');
+    d.setDate(d.getDate() - 1);
+    aoMudar(d.toISOString().split('T')[0]!);
+  }
+
+  function diaSeguinte() {
+    const d = new Date(dataSelecionada + 'T12:00:00');
+    d.setDate(d.getDate() + 1);
+    aoMudar(d.toISOString().split('T')[0]!);
+  }
+
   return (
-    <div className="cartao flex flex-wrap items-center justify-between gap-4 p-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <label className="flex flex-col gap-1 text-xs font-medium text-suave">
-          Data
-          <input
-            type="date"
-            aria-label="Data do fechamento"
-            value={dataSelecionada}
-            onChange={(e) => aoMudar(e.target.value)}
-            className="numeros rounded-lg px-3 py-2 text-sm font-semibold"
-          />
-        </label>
-        <label className="flex flex-col gap-1 text-xs font-medium text-suave">
-          Recentes
-          <select
-            aria-label="Fechamentos recentes"
-            value={dataSelecionada}
-            onChange={(e) => aoMudar(e.target.value)}
-            className="rounded-lg px-3 py-2 text-sm font-semibold"
-          >
-            <option value={hojeManaus()}>Hoje ({formatarDataBR(hojeManaus())})</option>
-            {recentes.map((r) => (
-              <option key={r.data} value={r.data}>
-                {formatarDataBR(r.data)} — {r.status === 'travado' ? 'Fechado' : 'Aberto'}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
-      {badge}
+    <div className="flex items-center gap-1.5 flex-wrap">
+      <button
+        type="button"
+        onClick={diaAnterior}
+        className="rounded-lg p-1.5 text-claro border border-borda hover:bg-claro/5 transition-all active:scale-95 flex items-center justify-center"
+        title="Dia anterior"
+      >
+        <IconeAnterior />
+      </button>
+      <input
+        type="date"
+        aria-label="Data selecionada"
+        className="rounded-lg border border-borda bg-transparent px-2.5 py-1 text-sm font-bold text-claro text-center focus:ring-ambar focus:border-ambar outline-none transition-all w-36"
+        value={dataSelecionada}
+        onChange={(e) => e.target.value && aoMudar(e.target.value)}
+      />
+      <button
+        type="button"
+        onClick={diaSeguinte}
+        className="rounded-lg p-1.5 text-claro border border-borda hover:bg-claro/5 transition-all active:scale-95 flex items-center justify-center"
+        title="Próximo dia"
+      >
+        <IconeProximo />
+      </button>
+      <button
+        type="button"
+        onClick={() => aoMudar(hojeManaus())}
+        className="rounded-lg border border-borda bg-claro/5 px-2.5 py-1 text-xs font-semibold text-claro hover:bg-claro/10 transition-colors flex items-center gap-1 h-8"
+        title="Ir para hoje"
+      >
+        <IconeHoje />
+        Hoje
+      </button>
     </div>
+  );
+}
+
+function IconeAnterior() {
+  return (
+    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+    </svg>
+  );
+}
+
+function IconeProximo() {
+  return (
+    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+    </svg>
+  );
+}
+
+function IconeHoje() {
+  return (
+    <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+    </svg>
   );
 }
 
