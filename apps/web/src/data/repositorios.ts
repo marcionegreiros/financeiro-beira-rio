@@ -2747,51 +2747,90 @@ export async function removerClienteFiado(id: string): Promise<void> {
 export const DATA_DIA_ZERO = '2026-06-01';
 
 export async function temFechamentoOperacional(): Promise<boolean> {
+  const { data: diaZero } = await supabase
+    .from('fechamento')
+    .select('data')
+    .eq('status', 'travado')
+    .order('data', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  const dataRef = diaZero?.data ?? DATA_DIA_ZERO;
+
   const { count, error } = await supabase
     .from('fechamento')
     .select('id', { count: 'exact', head: true })
-    .gt('data', DATA_DIA_ZERO)
+    .gt('data', dataRef)
     .eq('status', 'travado');
   if (error) throw error;
   return (count ?? 0) > 0;
 }
 
 export async function verificarSistemaInicializado(): Promise<boolean> {
-  const { data, error } = await supabase
+  const { count, error } = await supabase
+    .from('fechamento')
+    .select('id', { count: 'exact', head: true })
+    .eq('status', 'travado');
+  if (error) return false;
+  return (count ?? 0) > 0;
+}
+
+export async function obterFechamentoDiaZeroId(): Promise<string | null> {
+  const { data } = await supabase
+    .from('fechamento')
+    .select('id')
+    .eq('status', 'travado')
+    .order('data', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (data) return data.id;
+
+  // Fallback se não inicializado ainda
+  const { data: exist } = await supabase
     .from('fechamento')
     .select('id')
     .eq('data', DATA_DIA_ZERO)
-    .eq('status', 'travado')
     .maybeSingle();
-  if (error) return false;
-  return !!data;
+  return exist?.id ?? null;
 }
 
 export async function obterOuCriarFechamentoDiaZero(): Promise<string> {
+  const res = await obterOuCriarFechamentoDiaZeroComData();
+  return res.id;
+}
+
+export async function obterOuCriarFechamentoDiaZeroComData(): Promise<{ id: string; data: string }> {
+  const { data: diaZero, error: eDiaZero } = await supabase
+    .from('fechamento')
+    .select('id, data')
+    .eq('status', 'travado')
+    .order('data', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (eDiaZero) throw eDiaZero;
+  if (diaZero) return { id: diaZero.id, data: diaZero.data };
+
+  // Fallback se não inicializado ainda (usando DATA_DIA_ZERO)
   const { data: exist, error: eExist } = await supabase
     .from('fechamento')
-    .select('id')
+    .select('id, data')
     .eq('data', DATA_DIA_ZERO)
     .maybeSingle();
   if (eExist) throw eExist;
 
   if (exist) {
-    return exist.id;
+    return { id: exist.id, data: exist.data };
   }
 
-  const novoId = uuidv7();
+  const id = uuidv7();
   const { error: eInsert } = await supabase.from('fechamento').insert({
-    id: novoId,
+    id,
     data: DATA_DIA_ZERO,
-    status: 'travado',
-    troco_fixo_centavos: 10000,
-    observacao: 'Dia zero — cadastro inicial.',
-    confirmado_em: new Date().toISOString(),
-    travado_em: new Date().toISOString(),
+    status: 'aberto',
+    troco_fixo_centavos: 0,
+    observacao: 'Rascunho de abertura (Dia Zero).'
   });
   if (eInsert) throw eInsert;
-
-  return novoId;
+  return { id, data: DATA_DIA_ZERO };
 }
 
 export async function definirEstoqueInicialProduto(produtoId: string, quantidade: number): Promise<void> {
@@ -2817,7 +2856,7 @@ export async function definirLeituraInicialBomba(bombaId: string, leitura: numbe
 }
 
 export async function definirSaldoInicialConta(contaId: string, valorCentavos: Centavos, usuarioId: string | null): Promise<void> {
-  const fechamentoId = await obterOuCriarFechamentoDiaZero();
+  const { id: fechamentoId, data: dataRef } = await obterOuCriarFechamentoDiaZeroComData();
   
   const { data: exist, error: eExist } = await supabase
     .from('movimento')
@@ -2833,7 +2872,7 @@ export async function definirSaldoInicialConta(contaId: string, valorCentavos: C
       .from('movimento')
       .update({
         valor_centavos: centavosParaNumero(valorCentavos),
-        data_hora: new Date(DATA_DIA_ZERO + 'T12:00:00-04:00').toISOString(),
+        data_hora: new Date(dataRef + 'T12:00:00-04:00').toISOString(),
       })
       .eq('id', exist.id);
     if (eUpdate) throw eUpdate;
@@ -2843,7 +2882,7 @@ export async function definirSaldoInicialConta(contaId: string, valorCentavos: C
       tipo: 'ajuste',
       conta_id: contaId,
       valor_centavos: centavosParaNumero(valorCentavos),
-      data_hora: new Date(DATA_DIA_ZERO + 'T12:00:00-04:00').toISOString(),
+      data_hora: new Date(dataRef + 'T12:00:00-04:00').toISOString(),
       fechamento_id: fechamentoId,
       descricao: 'Saldo inicial (dia zero).',
       criado_por: usuarioId,
@@ -2853,13 +2892,13 @@ export async function definirSaldoInicialConta(contaId: string, valorCentavos: C
 }
 
 export async function buscarEstoqueInicialProduto(produtoId: string): Promise<number | null> {
-  const { data: fech } = await supabase.from('fechamento').select('id').eq('data', DATA_DIA_ZERO).maybeSingle();
-  if (!fech) return null;
+  const fechId = await obterFechamentoDiaZeroId();
+  if (!fechId) return null;
 
   const { data, error } = await supabase
     .from('contagem_produto')
     .select('quantidade')
-    .eq('fechamento_id', fech.id)
+    .eq('fechamento_id', fechId)
     .eq('produto_id', produtoId)
     .maybeSingle();
   if (error) return null;
@@ -2867,13 +2906,13 @@ export async function buscarEstoqueInicialProduto(produtoId: string): Promise<nu
 }
 
 export async function buscarLeituraInicialBomba(bombaId: string): Promise<number | null> {
-  const { data: fech } = await supabase.from('fechamento').select('id').eq('data', DATA_DIA_ZERO).maybeSingle();
-  if (!fech) return null;
+  const fechId = await obterFechamentoDiaZeroId();
+  if (!fechId) return null;
 
   const { data, error } = await supabase
     .from('leitura_bomba')
     .select('leitura')
-    .eq('fechamento_id', fech.id)
+    .eq('fechamento_id', fechId)
     .eq('bomba_id', bombaId)
     .maybeSingle();
   if (error) return null;
@@ -2881,13 +2920,13 @@ export async function buscarLeituraInicialBomba(bombaId: string): Promise<number
 }
 
 export async function buscarSaldoInicialConta(contaId: string): Promise<Centavos | null> {
-  const { data: fech } = await supabase.from('fechamento').select('id').eq('data', DATA_DIA_ZERO).maybeSingle();
-  if (!fech) return null;
+  const fechId = await obterFechamentoDiaZeroId();
+  if (!fechId) return null;
 
   const { data, error } = await supabase
     .from('movimento')
     .select('valor_centavos')
-    .eq('fechamento_id', fech.id)
+    .eq('fechamento_id', fechId)
     .eq('conta_id', contaId)
     .eq('tipo', 'ajuste')
     .maybeSingle();
@@ -2905,6 +2944,7 @@ export interface DadosSetupCombustivel {
     nome: string;
     capacidade: number;
     nivelAlerta: number;
+    nivelInicial: number;
   };
   bicos: Array<{
     nome: string;
@@ -2965,7 +3005,6 @@ export async function inicializarSistemaLote(dados: DadosSetupInicial): Promise<
       const { error: eComb } = await supabase.from('combustivel').insert({
         id: combustivelId,
         nome: c.nome,
-        ativo: true,
       });
       if (eComb) throw eComb;
       criados.push({ tabela: 'combustivel', id: combustivelId });
@@ -2991,12 +3030,22 @@ export async function inicializarSistemaLote(dados: DadosSetupInicial): Promise<
         id: tanqueId,
         combustivel_id: combustivelId,
         nome: c.tanque.nome,
-        capacidade: c.tanque.capacidade,
-        nivel_alerta: c.tanque.nivelAlerta,
+        capacidade_litros: c.tanque.capacidade,
+        nivel_alerta_litros: c.tanque.nivelAlerta,
         ativo: true,
       });
       if (eTanque) throw eTanque;
       criados.push({ tabela: 'tanque', id: tanqueId });
+
+      // Insere a medição de tanque inicial correspondente ao Dia Zero
+      const { error: eMedicao } = await supabase.from('medicao_tanque').insert({
+        id: uuidv7(),
+        tanque_id: tanqueId,
+        litros_medidos: c.tanque.nivelInicial,
+        data_hora: dataDiaZero + 'T12:00:00-04:00', // Meio-dia do Dia Zero
+        observacao: 'Medição inicial (Dia Zero).',
+      });
+      if (eMedicao) throw eMedicao;
 
       for (const b of c.bicos) {
         const bicoId = uuidv7();

@@ -3,14 +3,16 @@ import { useToast } from '../../components/ui/Toast';
 import { Campo, CLASSE_CAMPO } from '../../components/ui/Campo';
 import {
   listarCategorias,
+  salvarCategoria,
   inicializarSistemaLote,
   type Categoria,
   type DadosSetupCombustivel,
   type DadosSetupProduto,
   type DadosSetupConta,
 } from '../../data/repositorios';
-import { asCentavos, parseReais } from '../../lib/money';
+import { parseReais } from '../../lib/money';
 import { hojeManaus, formatarDataBR } from '../../lib/datas';
+import { uuidv7 } from '../../lib/uuidv7';
 
 interface Props {
   usuarioId: string | null;
@@ -21,7 +23,27 @@ type Etapa = 'config' | 'combustiveis' | 'produtos' | 'contas' | 'confirmacao';
 
 export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
   const toast = useToast();
-  const [etapa, setEtapa] = useState<Etapa>('config');
+
+  // ---- RASCUNHO AUTOMÁTICO (LOCAL STORAGE) ----
+  const CACHE_KEY = 'beiraRio_diaZeroRascunho';
+
+  // Carrega o rascunho de forma síncrona/lazy antes de inicializar os estados
+  const [rascunho] = useState(() => {
+    try {
+      const cache = localStorage.getItem(CACHE_KEY);
+      if (cache) {
+        return JSON.parse(cache, (_key, val) => {
+          if (typeof val === 'string' && /^-?\d+n$/.test(val)) return BigInt(val.slice(0, -1));
+          return val;
+        });
+      }
+    } catch (e) {
+      console.error("Erro ao carregar rascunho no init:", e);
+    }
+    return null;
+  });
+
+  const [etapa, setEtapa] = useState<Etapa>(() => rascunho?.etapa ?? 'config');
 
   // Categorias de produtos do banco
   const [categorias, setCategorias] = useState<Categoria[]>([]);
@@ -29,11 +51,11 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
   // ---- ESTADOS DE DADOS DO SETUP ----
   
   // Passo 1: Config Geral
-  const [dataDiaZero, setDataDiaZero] = useState(hojeManaus());
-  const [trocoGavetaStr, setTrocoGavetaStr] = useState('0,00');
+  const [dataDiaZero, setDataDiaZero] = useState(() => rascunho?.dataDiaZero ?? hojeManaus());
+  const [trocoGavetaStr, setTrocoGavetaStr] = useState(() => rascunho?.trocoGavetaStr ?? '0,00');
 
   // Passo 2: Combustíveis, Tanques e Bicos
-  const [listaCombustiveis, setListaCombustiveis] = useState<DadosSetupCombustivel[]>([]);
+  const [listaCombustiveis, setListaCombustiveis] = useState<DadosSetupCombustivel[]>(() => rascunho?.listaCombustiveis ?? []);
   
   // Formulário ativo para adicionar Combustível/Tanque
   const [combModo, setCombModo] = useState<'lista' | 'livre'>('lista');
@@ -44,14 +66,17 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
   const [tanqueNome, setTanqueNome] = useState('');
   const [tanqueCapacidade, setTanqueCapacidade] = useState('');
   const [tanqueAlerta, setTanqueAlerta] = useState('');
+  const [tanqueNivelInicial, setTanqueNivelInicial] = useState('');
   const [bicoFormNome, setBicoFormNome] = useState('');
   const [bicoFormLeitura, setBicoFormLeitura] = useState('');
   const [bicosTemporarios, setBicosTemporarios] = useState<{ nome: string; encerranteInicial: number }[]>([]);
 
   // Passo 3: Produtos
-  const [listaProdutos, setListaProdutos] = useState<DadosSetupProduto[]>([]);
+  const [listaProdutos, setListaProdutos] = useState<DadosSetupProduto[]>(() => rascunho?.listaProdutos ?? []);
   const [prodNome, setProdNome] = useState('');
   const [prodCategoriaId, setProdCategoriaId] = useState('');
+  const [prodCategoriaModo, setProdCategoriaModo] = useState<'lista' | 'nova'>('lista');
+  const [prodCategoriaNova, setProdCategoriaNova] = useState('');
   const [prodModo, setProdModo] = useState<'contagem' | 'individual'>('contagem');
   const [prodPrecoVenda, setProdPrecoVenda] = useState('');
   const [prodPrecoCusto, setProdPrecoCusto] = useState('');
@@ -60,7 +85,7 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
   const [prodAlertaMuitoBaixo, setProdAlertaMuitoBaixo] = useState('');
 
   // Passo 4: Contas
-  const [listaContas, setListaContas] = useState<DadosSetupConta[]>([]);
+  const [listaContas, setListaContas] = useState<DadosSetupConta[]>(() => rascunho?.listaContas ?? []);
   const [contaModo, setContaModo] = useState<'lista' | 'livre'>('lista');
   const [contaNovaNome, setContaNovaNome] = useState('');
   const [contaNovaTipoUI, setContaNovaTipoUI] = useState('banco');
@@ -74,19 +99,51 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
       .then((cats) => {
         setCategorias(cats);
         const primeiraCat = cats[0];
-        if (primeiraCat) setProdCategoriaId(primeiraCat.id);
+        if (primeiraCat && !prodCategoriaId) setProdCategoriaId(primeiraCat.id);
       })
       .catch(console.error);
   }, []);
 
+  useEffect(() => {
+    if (salvando) return;
+    try {
+      const dados = { etapa, dataDiaZero, trocoGavetaStr, listaCombustiveis, listaProdutos, listaContas };
+      localStorage.setItem(CACHE_KEY, JSON.stringify(dados, (_key, val) => 
+        typeof val === 'bigint' ? val.toString() + 'n' : val
+      ));
+    } catch (e) {
+      console.error("Erro ao salvar rascunho:", e);
+    }
+  }, [etapa, dataDiaZero, trocoGavetaStr, listaCombustiveis, listaProdutos, listaContas, salvando]);
+
+
   // ---- AUXILIARES DE FORMATAÇÃO E INPUT ----
 
   function formatarDinheiroInput(valor: string) {
-    const limpo = valor.replace(/\D/g, '');
-    if (!limpo) return '0,00';
-    const num = Number(limpo) / 100;
-    return num.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    let limpo = valor.replace(/[^0-9,]/g, '');
+    const parts = limpo.split(',');
+    if (parts.length > 2) {
+      const first = parts[0];
+      if (first !== undefined) {
+        limpo = first + ',' + parts.slice(1).join('');
+      }
+    }
+    const p = limpo.split(',');
+    const p0 = p[0];
+    const p1 = p[1];
+    if (p0 !== undefined && p1 !== undefined && p1.length > 2) {
+      limpo = p0 + ',' + p1.substring(0, 2);
+    }
+    return limpo;
   }
+
+  function aoSairDinheiro(setter: React.Dispatch<React.SetStateAction<string>>, valor: string) {
+    if (!valor) { setter(''); return; }
+    const num = Number(valor.replace(',', '.'));
+    if (isNaN(num)) { setter(''); return; }
+    setter(num.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+  }
+
 
   // ---- ADIÇÃO / MANIPULAÇÃO DE DADOS ----
 
@@ -120,9 +177,19 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
     if (!combPrecoVenda) return toast.erro('Informe o preço de venda.');
     if (!combPrecoCusto) return toast.erro('Informe o preço de custo.');
     if (!tanqueNome.trim()) return toast.erro('Informe o nome do tanque.');
+    
     const cap = Number(tanqueCapacidade.replace(/\./g, '').replace(',', '.'));
     if (isNaN(cap) || cap <= 0) return toast.erro('Capacidade do tanque inválida.');
-    const alerta = tanqueAlerta ? Number(tanqueAlerta.replace(/\./g, '').replace(',', '.')) : 0;
+    
+    if (!tanqueAlerta) return toast.erro('Informe o nível de alerta mínimo do tanque.');
+    const alerta = Number(tanqueAlerta.replace(/\./g, '').replace(',', '.'));
+    if (isNaN(alerta) || alerta < 0) return toast.erro('Nível de alerta do tanque inválido.');
+    if (alerta > cap) return toast.erro('O nível de alerta não pode ser maior que a capacidade do tanque.');
+    
+    if (!tanqueNivelInicial) return toast.erro('Informe a quantidade de combustível inicial (Estoque Inicial).');
+    const nivelInit = Number(tanqueNivelInicial.replace(/\./g, '').replace(',', '.'));
+    if (isNaN(nivelInit) || nivelInit < 0) return toast.erro('Nível inicial do tanque inválido.');
+    if (nivelInit > cap) return toast.erro('O estoque inicial não pode ser maior que a capacidade do tanque.');
 
     if (bicosTemporarios.length === 0) {
       return toast.erro('Adicione pelo menos um bico/bomba ao tanque.');
@@ -138,7 +205,8 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
       tanque: {
         nome: tanqueNome.trim(),
         capacidade: cap,
-        nivelAlerta: alerta
+        nivelAlerta: alerta,
+        nivelInicial: nivelInit
       },
       bicos: bicosTemporarios
     };
@@ -154,6 +222,7 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
     setTanqueNome('');
     setTanqueCapacidade('');
     setTanqueAlerta('');
+    setTanqueNivelInicial('');
     setBicoFormNome('');
     setBicoFormLeitura('');
     setBicosTemporarios([]);
@@ -181,6 +250,7 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
     setTanqueNome(c.tanque.nome);
     setTanqueCapacidade(c.tanque.capacidade.toLocaleString('pt-BR'));
     setTanqueAlerta(c.tanque.nivelAlerta ? c.tanque.nivelAlerta.toLocaleString('pt-BR') : '');
+    setTanqueNivelInicial(c.tanque.nivelInicial ? c.tanque.nivelInicial.toLocaleString('pt-BR') : '');
     
     setBicosTemporarios(c.bicos);
     removerCombustivelLista(index);
@@ -189,17 +259,46 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
 
   function adicionarProdutoLista() {
     if (!prodNome.trim()) return toast.erro('Informe o nome do produto.');
-    if (!prodCategoriaId) return toast.erro('Selecione a categoria.');
+    if (prodCategoriaModo === 'lista' && !prodCategoriaId) return toast.erro('Selecione a categoria.');
+    if (prodCategoriaModo === 'nova' && !prodCategoriaNova.trim()) return toast.erro('Informe o nome da nova categoria.');
     if (!prodPrecoVenda) return toast.erro('Informe o preço de venda.');
     if (!prodPrecoCusto) return toast.erro('Informe o preço de custo.');
 
-    const estoque = prodEstoqueInicial ? Number(prodEstoqueInicial.replace(',', '.')) : 0;
-    const alertB = prodAlertaBaixo ? Number(prodAlertaBaixo) : null;
-    const alertMB = prodAlertaMuitoBaixo ? Number(prodAlertaMuitoBaixo) : null;
+    if (prodModo === 'contagem' && !prodEstoqueInicial) {
+      return toast.erro('Informe a quantidade de estoque inicial.');
+    }
+    const estoque = prodEstoqueInicial ? Number(prodEstoqueInicial.replace(/\./g, '').replace(',', '.')) : 0;
+    if (isNaN(estoque) || estoque < 0) return toast.erro('Estoque inicial inválido.');
+
+    if (!prodAlertaBaixo) return toast.erro('Informe a quantidade para alerta de estoque baixo.');
+    const alertB = Number(prodAlertaBaixo.replace(/\./g, '').replace(',', '.'));
+    if (isNaN(alertB) || alertB < 0) return toast.erro('Alerta de estoque baixo inválido.');
+
+    if (!prodAlertaMuitoBaixo) return toast.erro('Informe a quantidade para alerta de estoque muito baixo.');
+    const alertMB = Number(prodAlertaMuitoBaixo.replace(/\./g, '').replace(',', '.'));
+    if (isNaN(alertMB) || alertMB < 0) return toast.erro('Alerta de estoque muito baixo inválido.');
+
+    if (alertMB >= alertB) {
+      return toast.erro('O alerta de estoque muito baixo deve ser menor que o alerta de estoque baixo.');
+    }
+
+    let catIdToUse = prodCategoriaId;
+
+    if (prodCategoriaModo === 'nova') {
+      const novaCat = {
+        id: uuidv7(),
+        nome: prodCategoriaNova.trim(),
+        ordem: (categorias.length + 1) * 10
+      };
+      // Salva no banco "por baixo dos panos"
+      salvarCategoria(novaCat).catch(e => console.error("Erro ao criar categoria:", e));
+      setCategorias(prev => [...prev, novaCat]);
+      catIdToUse = novaCat.id;
+    }
 
     const novoProd: DadosSetupProduto = {
       nome: prodNome.trim(),
-      categoriaId: prodCategoriaId,
+      categoriaId: catIdToUse,
       modoApuracao: prodModo,
       ordem: (listaProdutos.length + 1) * 10,
       precoVenda: parseReais(prodPrecoVenda),
@@ -213,6 +312,9 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
 
     // Limpa form
     setProdNome('');
+    setProdCategoriaId('');
+    setProdCategoriaModo('lista');
+    setProdCategoriaNova('');
     setProdPrecoVenda('');
     setProdPrecoCusto('');
     setProdEstoqueInicial('');
@@ -245,13 +347,14 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
 
   function adicionarContaLista() {
     if (!contaNovaNome.trim()) return toast.erro('Informe o nome da conta.');
-    const saldo = contaNovaSaldo ? parseReais(contaNovaSaldo) : asCentavos(0n);
+    if (!contaNovaSaldo) return toast.erro('Informe o saldo de partida da conta.');
+    const saldo = parseReais(contaNovaSaldo);
     
     // Determina o tipo real para o banco de dados (o sistema só opera com dinheiro físico ou banco/digital)
     const tipoRealDB = contaNovaTipoUI === 'dinheiro' ? 'dinheiro' : 'banco';
     
-    // Se for a primeira conta bancária (e não houver outra padrão), marca como padrão
-    const seraPadrao = tipoRealDB === 'banco' && !listaContas.some(c => c.ehDestinoPadraoVenda);
+    // Se for a primeira conta daquele tipo (dinheiro ou banco), marca como padrão
+    const seraPadrao = !listaContas.some(c => c.tipo === tipoRealDB && c.ehDestinoPadraoVenda);
 
     const novaConta: DadosSetupConta & { tipoUI?: string } = {
       nome: contaNovaNome.trim(),
@@ -271,7 +374,23 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
   }
 
   function removerContaLista(index: number) {
-    setListaContas(prev => prev.filter((_, i) => i !== index));
+    setListaContas(prev => {
+      const target = prev[index];
+      const filtrado = prev.filter((_, i) => i !== index);
+      if (target && target.ehDestinoPadraoVenda) {
+        const indexDoMesmoTipo = filtrado.findIndex(c => c.tipo === target.tipo);
+        if (indexDoMesmoTipo !== -1) {
+          const contaParaAtualizar = filtrado[indexDoMesmoTipo];
+          if (contaParaAtualizar) {
+            filtrado[indexDoMesmoTipo] = {
+              ...contaParaAtualizar,
+              ehDestinoPadraoVenda: true
+            };
+          }
+        }
+      }
+      return filtrado;
+    });
   }
 
   function editarContaLista(index: number) {
@@ -300,11 +419,16 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
-  function marcarContaComoPadrao(index: number) {
-    setListaContas(prev => prev.map((c, i) => ({
-      ...c,
-      ehDestinoPadraoVenda: i === index
-    })));
+  function marcarContaComoPadrao(index: number, tipo: 'dinheiro' | 'banco') {
+    setListaContas(prev => prev.map((c, i) => {
+      if (c.tipo === tipo) {
+        return {
+          ...c,
+          ehDestinoPadraoVenda: i === index
+        };
+      }
+      return c;
+    }));
   }
 
   // ---- SUBMIT E INICIALIZAÇÃO FINAL ----
@@ -327,8 +451,8 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
     if (contaNovaNome.trim()) {
       return toast.erro("Você tem uma conta preenchida mas não adicionada. Clique em 'Adicionar Conta' ou limpe os campos antes de avançar.");
     }
-    if (!listaContas.some(c => c.tipo === 'dinheiro')) {
-      return toast.erro('Adicione a conta de Dinheiro Físico antes de avançar.');
+    if (!listaContas.some(c => c.tipo === 'dinheiro' && c.ehDestinoPadraoVenda)) {
+      return toast.erro('Adicione e marque uma conta de Dinheiro Físico como Padrão antes de avançar.');
     }
     if (!listaContas.some(c => c.tipo !== 'dinheiro' && c.ehDestinoPadraoVenda)) {
       return toast.erro('Adicione pelo menos um Banco marcado como Destino Padrão (Cartão/PIX).');
@@ -357,6 +481,7 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
       });
 
       toast.sucesso('Sistema inicializado com sucesso!');
+      localStorage.removeItem(CACHE_KEY);
       aoConcluir();
     } catch (err) {
       console.error(err);
@@ -475,9 +600,11 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
                 <Campo label="Troco de Caixa Padrão (R$)" obrigatorio dica="Fundo de troco fixo que fica na gaveta">
                   <input
                     type="text"
-                    className={`${CLASSE_CAMPO} numeros text-right`}
+                    className={`${CLASSE_CAMPO} numeros text-right text-lg font-bold text-emerald-400 focus:border-emerald-400`}
+                    placeholder="0,00"
                     value={trocoGavetaStr}
                     onChange={(e) => setTrocoGavetaStr(formatarDinheiroInput(e.target.value))}
+                    onBlur={() => aoSairDinheiro(setTrocoGavetaStr, trocoGavetaStr)}
                   />
                 </Campo>
               </div>
@@ -562,6 +689,7 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
                       placeholder="0,00"
                       value={combPrecoVenda}
                       onChange={(e) => setCombPrecoVenda(formatarDinheiroInput(e.target.value))}
+                      onBlur={() => aoSairDinheiro(setCombPrecoVenda, combPrecoVenda)}
                     />
                   </Campo>
 
@@ -571,6 +699,7 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
                       placeholder="0,00"
                       value={combPrecoCusto}
                       onChange={(e) => setCombPrecoCusto(formatarDinheiroInput(e.target.value))}
+                      onBlur={() => aoSairDinheiro(setCombPrecoCusto, combPrecoCusto)}
                     />
                   </Campo>
                 </div>
@@ -583,7 +712,7 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
                     Armazenamento (Tanque)
                   </h4>
                   
-                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
                     <Campo label="Nome do Tanque" obrigatorio>
                     {tanqueModo === 'lista' ? (
                       <select
@@ -596,12 +725,14 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
                             setTanqueNome('');
                             setTanqueCapacidade('');
                             setTanqueAlerta('');
+                            setTanqueNivelInicial('');
                           } else {
                             setTanqueNome(val);
                             const existente = listaCombustiveis.find(c => c.tanque.nome === val);
                             if (existente) {
                               setTanqueCapacidade(existente.tanque.capacidade.toLocaleString('pt-BR'));
                               setTanqueAlerta(existente.tanque.nivelAlerta ? existente.tanque.nivelAlerta.toLocaleString('pt-BR') : '');
+                              setTanqueNivelInicial(existente.tanque.nivelInicial ? existente.tanque.nivelInicial.toLocaleString('pt-BR') : '');
                             }
                           }
                         }}
@@ -642,7 +773,16 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
                     />
                   </Campo>
 
-                  <Campo label="Nível Alerta Mínimo (Litros)">
+                  <Campo label="Estoque Inicial (Litros)" obrigatorio>
+                    <input
+                      className={`${CLASSE_CAMPO} numeros text-right`}
+                      placeholder="Ex.: 8.000"
+                      value={tanqueNivelInicial}
+                      onChange={(e) => setTanqueNivelInicial(e.target.value)}
+                    />
+                  </Campo>
+
+                  <Campo label="Nível Alerta Mínimo (Litros)" obrigatorio>
                     <input
                       className={`${CLASSE_CAMPO} numeros text-right`}
                       placeholder="Ex.: 3.000"
@@ -688,12 +828,8 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
                     </div>
                   </div>
 
-                  {/* Estado vazio ou Lista de bicos */}
-                  {bicosTemporarios.length === 0 ? (
-                    <div className="mt-1 rounded-lg border border-dashed border-borda/50 bg-fundo/30 p-4 text-center">
-                      <p className="text-xs text-suave">Nenhum bico adicionado ainda. É obrigatório adicionar pelo menos um bico para este tanque.</p>
-                    </div>
-                  ) : (
+                  {/* Lista de bicos */}
+                  {bicosTemporarios.length > 0 && (
                     <div className="mt-1 bg-claro/[0.02] border border-borda/40 rounded-lg p-3">
                       <span className="text-xs font-semibold text-suave">Bicos que serão adicionados a este tanque:</span>
                       <ul className="mt-2 flex flex-col gap-1">
@@ -738,17 +874,22 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
                   <h4 className="text-sm font-bold text-claro uppercase tracking-wider">Combustíveis a serem Cadastrados:</h4>
                   <div className="flex flex-col gap-2">
                     {listaCombustiveis.map((c, idx) => (
-                      <div key={idx} className="flex items-center justify-between rounded-xl border border-borda p-4 bg-claro/[0.01]">
+                      <div key={idx} className="flex items-start md:items-center justify-between gap-6 rounded-xl border border-borda p-4 bg-claro/[0.01]">
                         <div>
                           <p className="text-sm font-bold text-claro">{c.nome}</p>
-                          <p className="text-xs text-suave">
-                            Tanque: {c.tanque.nome} (Capacidade: {c.tanque.capacidade.toLocaleString('pt-BR')} L)
-                          </p>
-                          <p className="text-xs text-suave">
-                            Bicos: {c.bicos.map(b => `${b.nome} (partida: ${b.encerranteInicial.toLocaleString('pt-BR')} L)`).join(', ')}
-                          </p>
+                          <div className="mt-1 flex flex-col gap-0.5 text-xs text-suave">
+                            <div>
+                              <span className="font-semibold text-claro/80">Valores:</span> Venda R$ {((Number(c.precoVenda) / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2 }))}/L &bull; Custo R$ {((Number(c.precoCusto) / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2 }))}/L
+                            </div>
+                            <div>
+                              <span className="font-semibold text-claro/80">Tanque:</span> {c.tanque.nome} &bull; Capacidade {c.tanque.capacidade.toLocaleString('pt-BR')} L &bull; Estoque Inicial {((c.tanque.nivelInicial ?? 0).toLocaleString('pt-BR'))} L &bull; Alerta Mínimo {c.tanque.nivelAlerta ? `${c.tanque.nivelAlerta.toLocaleString('pt-BR')} L` : 'Não definido'}
+                            </div>
+                            <div>
+                              <span className="font-semibold text-claro/80">Bicos:</span> {c.bicos.map(b => `${b.nome} com encerrante de ${b.encerranteInicial.toLocaleString('pt-BR')} L`).join(', ')}
+                            </div>
+                          </div>
                         </div>
-                        <div className="flex gap-2">
+                        <div className="flex gap-2 shrink-0">
                           <button
                             type="button"
                             onClick={() => editarCombustivelLista(idx)}
@@ -767,6 +908,13 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
                       </div>
                     ))}
                   </div>
+                </div>
+              )}
+
+              {listaCombustiveis.length > 0 && (
+                <div className="rounded-xl border border-ambar/30 bg-ambar/5 p-3 text-xs text-ambar flex items-center justify-between">
+                  <span>💡 <strong>{listaCombustiveis.length} tanque(s)</strong> configurado(s) em rascunho neste computador.</span>
+                  <span className="text-[10px] opacity-80">Avance até a Etapa 5 para salvar tudo no banco.</span>
                 </div>
               )}
 
@@ -812,17 +960,44 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
                   </Campo>
 
                   <Campo label="Categoria" obrigatorio>
-                    <select
-                      aria-label="Categoria"
-                      className={CLASSE_CAMPO}
-                      value={prodCategoriaId}
-                      onChange={(e) => setProdCategoriaId(e.target.value)}
-                    >
-                      <option value="" disabled>Selecione…</option>
-                      {categorias.map(c => (
-                        <option key={c.id} value={c.id}>{c.nome}</option>
-                      ))}
-                    </select>
+                    {prodCategoriaModo === 'nova' ? (
+                      <div className="flex gap-2">
+                        <input
+                          className={CLASSE_CAMPO}
+                          placeholder="Ex.: Filtros, Acessórios"
+                          value={prodCategoriaNova}
+                          onChange={(e) => setProdCategoriaNova(e.target.value)}
+                          autoFocus
+                        />
+                        <button 
+                          type="button" 
+                          onClick={() => { setProdCategoriaModo('lista'); setProdCategoriaNova(''); setProdCategoriaId(''); }} 
+                          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-borda text-suave hover:bg-negativo/10 hover:text-negativo transition-colors"
+                          title="Cancelar nova categoria"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ) : (
+                      <select
+                        aria-label="Categoria"
+                        className={CLASSE_CAMPO}
+                        value={prodCategoriaId}
+                        onChange={(e) => {
+                          if (e.target.value === 'nova_categoria') {
+                            setProdCategoriaModo('nova');
+                          } else {
+                            setProdCategoriaId(e.target.value);
+                          }
+                        }}
+                      >
+                        <option value="" disabled>Selecione…</option>
+                        {categorias.map(c => (
+                          <option key={c.id} value={c.id}>{c.nome}</option>
+                        ))}
+                        <option value="nova_categoria">+ Criar nova categoria (digitar)</option>
+                      </select>
+                    )}
                   </Campo>
 
                   <Campo label="Modo de apuração">
@@ -845,6 +1020,7 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
                       placeholder="0,00"
                       value={prodPrecoVenda}
                       onChange={(e) => setProdPrecoVenda(formatarDinheiroInput(e.target.value))}
+                      onBlur={() => aoSairDinheiro(setProdPrecoVenda, prodPrecoVenda)}
                     />
                   </Campo>
 
@@ -854,11 +1030,12 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
                       placeholder="0,00"
                       value={prodPrecoCusto}
                       onChange={(e) => setProdPrecoCusto(formatarDinheiroInput(e.target.value))}
+                      onBlur={() => aoSairDinheiro(setProdPrecoCusto, prodPrecoCusto)}
                     />
                   </Campo>
 
                   {prodModo === 'contagem' && (
-                    <Campo label="Estoque Físico Inicial (Unidades)">
+                    <Campo label="Estoque Físico Inicial (Unidades)" obrigatorio>
                       <input
                         className={`${CLASSE_CAMPO} numeros text-right`}
                         placeholder="Ex.: 40"
@@ -870,7 +1047,7 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
                 </div>
 
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 border-t border-borda/30 pt-4">
-                  <Campo label="Alerta de Estoque Baixo">
+                  <Campo label="Alerta de Estoque Baixo" obrigatorio>
                     <input
                       className={`${CLASSE_CAMPO} numeros text-right`}
                       placeholder="Ex.: 10"
@@ -879,7 +1056,7 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
                     />
                   </Campo>
 
-                  <Campo label="Alerta de Estoque Muito Baixo">
+                  <Campo label="Alerta de Estoque Muito Baixo" obrigatorio>
                     <input
                       className={`${CLASSE_CAMPO} numeros text-right`}
                       placeholder="Ex.: 5"
@@ -904,17 +1081,22 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
                   <h4 className="text-sm font-bold text-claro uppercase tracking-wider">Produtos a serem Cadastrados ({listaProdutos.length}):</h4>
                   <div className="flex flex-col gap-2">
                     {listaProdutos.map((p, idx) => (
-                      <div key={idx} className="flex items-center justify-between rounded-xl border border-borda p-4 bg-claro/[0.01]">
+                      <div key={idx} className="flex items-start md:items-center justify-between gap-6 rounded-xl border border-borda p-4 bg-claro/[0.01]">
                         <div>
                           <p className="text-sm font-bold text-claro">{p.nome}</p>
-                          <p className="text-xs text-suave">
-                            Categoria: {categorias.find(c => c.id === p.categoriaId)?.nome ?? ''} | Modo: {p.modoApuracao}
-                          </p>
-                          <p className="text-xs text-suave">
-                            Estoque inicial: {p.estoqueInicial} unidades | Venda: R$ {Number(p.precoVenda / 100n).toFixed(2)} | Custo: R$ {Number(p.precoCusto / 100n).toFixed(2)}
-                          </p>
+                          <div className="mt-1 flex flex-col gap-0.5 text-xs text-suave">
+                            <div>
+                              <span className="font-semibold text-claro/80">Valores:</span> Venda R$ {((Number(p.precoVenda) / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2 }))} &bull; Custo R$ {((Number(p.precoCusto) / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2 }))}
+                            </div>
+                            <div>
+                              <span className="font-semibold text-claro/80">Estoque Inicial:</span> {p.modoApuracao === 'contagem' ? `${p.estoqueInicial.toLocaleString('pt-BR')} unidades` : 'Controle Individual'}
+                            </div>
+                            <div>
+                              <span className="font-semibold text-claro/80">Detalhes:</span> Categoria {categorias.find(cat => cat.id === p.categoriaId)?.nome ?? ''} &bull; Apuração {p.modoApuracao === 'contagem' ? 'Por Contagem' : 'Individual (Venda Avulsa)'}
+                            </div>
+                          </div>
                         </div>
-                        <div className="flex gap-2">
+                        <div className="flex gap-2 shrink-0">
                           <button
                             type="button"
                             onClick={() => editarProdutoLista(idx)}
@@ -933,6 +1115,13 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
                       </div>
                     ))}
                   </div>
+                </div>
+              )}
+
+              {listaProdutos.length > 0 && (
+                <div className="rounded-xl border border-ambar/30 bg-ambar/5 p-3 text-xs text-ambar flex items-center justify-between">
+                  <span>💡 <strong>{listaProdutos.length} produto(s)</strong> cadastrado(s) em rascunho neste computador.</span>
+                  <span className="text-[10px] opacity-80">Avance até a Etapa 5 para salvar tudo no banco.</span>
                 </div>
               )}
 
@@ -1050,12 +1239,13 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
                     )}
                   </Campo>
 
-                  <Campo label="Saldo de Partida / Inicial (R$)">
+                  <Campo label="Saldo de Partida / Inicial (R$)" obrigatorio>
                     <input
                       className={`${CLASSE_CAMPO} numeros text-right`}
                       placeholder="0,00"
                       value={contaNovaSaldo}
                       onChange={(e) => setContaNovaSaldo(formatarDinheiroInput(e.target.value))}
+                      onBlur={() => aoSairDinheiro(setContaNovaSaldo, contaNovaSaldo)}
                     />
                   </Campo>
                 </div>
@@ -1075,12 +1265,12 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
                   <h4 className="text-sm font-bold text-claro uppercase tracking-wider">Contas Cadastradas para Inicialização:</h4>
                   <div className="flex flex-col gap-2">
                     {listaContas.map((c, idx) => (
-                      <div key={idx} className="flex items-center justify-between rounded-xl border border-borda p-4 bg-claro/[0.01]">
+                      <div key={idx} className="flex items-start md:items-center justify-between gap-6 rounded-xl border border-borda p-4 bg-claro/[0.01]">
                         <div>
                           <p className="text-sm font-bold text-claro">
                             {c.nome} 
                             {c.ehDestinoPadraoVenda && c.tipo !== 'dinheiro' && <span className="text-[10px] bg-ambar/20 text-ambar px-2 py-0.5 rounded-full ml-2">Conta Padrão (Cartão/PIX)</span>}
-                            {c.tipo === 'dinheiro' && <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full ml-2">Conta Padrão (Dinheiro Físico)</span>}
+                            {c.ehDestinoPadraoVenda && c.tipo === 'dinheiro' && <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full ml-2">Caixa Padrão (Dinheiro Físico)</span>}
                           </p>
                           <p className="text-xs text-suave">
                             Tipo: {
@@ -1090,20 +1280,20 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
                               (c as DadosSetupConta & { tipoUI?: string }).tipoUI || (c.tipo === 'dinheiro' ? 'Dinheiro' : 'Banco')
                             } | Saldo inicial: R$ {Number(c.saldoInicial / 100n).toFixed(2).replace('.', ',')}
                           </p>
-                          {c.tipo !== 'dinheiro' && (
-                            <label className="flex items-center gap-2 cursor-pointer mt-2 text-xs text-suave w-fit">
-                              <input 
-                                type="radio" 
-                                name="contaPadrao" 
-                                checked={c.ehDestinoPadraoVenda} 
-                                onChange={() => marcarContaComoPadrao(idx)}
-                                className="text-ambar focus:ring-ambar"
-                              />
-                              Marcar como Destino Padrão de Vendas (Cartão/PIX)
-                            </label>
-                          )}
+                          <label className="flex items-center gap-2 cursor-pointer mt-2 text-xs text-suave w-fit">
+                            <input 
+                              type="radio" 
+                              name={c.tipo === 'dinheiro' ? "contaDinheiroPadrao" : "contaBancoPadrao"} 
+                              checked={c.ehDestinoPadraoVenda} 
+                              onChange={() => marcarContaComoPadrao(idx, c.tipo as 'dinheiro' | 'banco')}
+                              className="text-ambar focus:ring-ambar"
+                            />
+                            {c.tipo === 'dinheiro' 
+                              ? 'Marcar como Caixa/Dinheiro Físico Padrão' 
+                              : 'Marcar como Destino Padrão de Vendas (Cartão/PIX)'}
+                          </label>
                         </div>
-                        <div className="flex gap-2">
+                        <div className="flex gap-2 shrink-0">
                           <button
                             type="button"
                             onClick={() => editarContaLista(idx)}
@@ -1122,6 +1312,13 @@ export function DiaZeroSetup({ usuarioId, aoConcluir }: Props) {
                       </div>
                     ))}
                   </div>
+                </div>
+              )}
+
+              {listaContas.length > 0 && (
+                <div className="rounded-xl border border-ambar/30 bg-ambar/5 p-3 text-xs text-ambar flex items-center justify-between">
+                  <span>💡 <strong>{listaContas.length} conta(s)</strong> cadastrada(s) em rascunho neste computador.</span>
+                  <span className="text-[10px] opacity-80">Avance até a Etapa 5 para salvar tudo no banco.</span>
                 </div>
               )}
 

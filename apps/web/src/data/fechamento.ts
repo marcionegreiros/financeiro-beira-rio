@@ -194,9 +194,12 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
     tipo: string;
     eh_destino_padrao_venda: boolean;
   }>;
-  const contaCaixaId = contas.find((c) => c.tipo === 'dinheiro')?.id ?? null;
+  const contaCaixaId =
+    contas.find((c) => c.tipo === 'dinheiro' && c.eh_destino_padrao_venda)?.id ??
+    contas.find((c) => c.tipo === 'dinheiro')?.id ??
+    null;
   const contaBancoId =
-    contas.find((c) => c.eh_destino_padrao_venda)?.id ??
+    contas.find((c) => c.tipo === 'banco' && c.eh_destino_padrao_venda)?.id ??
     contas.find((c) => c.tipo === 'banco')?.id ??
     null;
 
@@ -1016,7 +1019,9 @@ export async function recalcularCascata(dataInicial: string): Promise<void> {
     }
 
     const movsToInsert: MovimentoInsert[] = [];
-    const contaCaixaId = (contasRaw ?? []).find((c) => c.tipo === 'dinheiro')?.id;
+    const contaCaixaId =
+      (contasRaw ?? []).find((c) => c.tipo === 'dinheiro' && c.eh_destino_padrao_venda)?.id ??
+      (contasRaw ?? []).find((c) => c.tipo === 'dinheiro')?.id;
     const responsavelId = f.responsavel_id;
 
     if (cashSales !== 0n && contaCaixaId) {

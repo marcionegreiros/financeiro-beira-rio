@@ -198,12 +198,18 @@ export function Contas() {
     },
     {
       chave: 'destino',
-      titulo: 'Destino Venda',
+      titulo: 'Destino Padrão',
       render: (c) =>
         c.ehDestinoPadraoVenda ? (
-          <span className="inline-flex rounded-full border border-ambar/30 px-2 py-0.5 text-xs font-medium text-ambar">
-            Padrão
-          </span>
+          c.tipo === 'dinheiro' ? (
+            <span className="inline-flex rounded-full border border-emerald-500/30 px-2 py-0.5 text-xs font-medium text-emerald-400 bg-emerald-500/10">
+              Caixa Padrão
+            </span>
+          ) : (
+            <span className="inline-flex rounded-full border border-ambar/30 px-2 py-0.5 text-xs font-medium text-ambar bg-ambar/10">
+              Banco Padrão
+            </span>
+          )
         ) : (
           <span className="text-suave">—</span>
         ),
@@ -344,7 +350,7 @@ export function Contas() {
                 onChange={(e) => setEhDestinoPadraoVenda(e.target.checked)}
                 className="rounded border-borda bg-transparent text-ambar focus:ring-ambar"
               />
-              Destino padrão da venda
+              {tipo === 'dinheiro' ? 'Definir como Caixa Físico Padrão (Gaveta)' : 'Destino padrão de vendas (Cartão/PIX)'}
             </label>
             <label className="flex items-center gap-2 text-sm text-claro">
               <input

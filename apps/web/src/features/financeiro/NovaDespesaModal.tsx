@@ -3,6 +3,7 @@ import {
   listarContasCompletas,
   listarCategoriasDespesa,
   lancarDespesa,
+  salvarCategoriaDespesa,
   type ContaCompleta,
   type CategoriaDespesa,
 } from '../../data/repositorios';
@@ -60,6 +61,40 @@ export function NovaDespesaModal({
   const [descricao, setDescricao] = useState('');
   const [tagsStr, setTagsStr] = useState('');
   const [salvando, setSalvando] = useState(false);
+
+  // Cadastrar nova categoria na hora
+  const [mostrandoNovaCat, setMostrandoNovaCat] = useState(false);
+  const [novaCatNome, setNovaCatNome] = useState('');
+  const [salvandoNovaCat, setSalvandoNovaCat] = useState(false);
+
+  async function aoSalvarNovaCat() {
+    if (!novaCatNome.trim()) {
+      toast.erro('Digite o nome da categoria.');
+      return;
+    }
+    setSalvandoNovaCat(true);
+    try {
+      const novaCat = {
+        id: uuidv7(),
+        nome: novaCatNome.trim(),
+        ehEspecial: false
+      };
+      await salvarCategoriaDespesa(novaCat);
+      toast.sucesso('Categoria cadastrada com sucesso!');
+      
+      const catAtualizadas = await listarCategoriasDespesa();
+      setCategorias(catAtualizadas.filter((x) => x.nome.toLowerCase() !== 'perda'));
+      setCategoriaId(novaCat.id);
+      
+      setMostrandoNovaCat(false);
+      setNovaCatNome('');
+    } catch (err) {
+      console.error(err);
+      toast.erro('Erro ao cadastrar categoria.');
+    } finally {
+      setSalvandoNovaCat(false);
+    }
+  }
 
   useEffect(() => {
     if (!aberto) return;
@@ -151,14 +186,60 @@ export function NovaDespesaModal({
             </select>
           </Campo>
           <Campo label="Categoria" obrigatorio>
-            <select aria-label="Categoria" className={CLASSE_CAMPO} value={categoriaId} onChange={(e) => setCategoriaId(e.target.value)}>
-              <option value="">Tipo da despesa</option>
-              {categorias.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.nome}
-                </option>
-              ))}
-            </select>
+            {!mostrandoNovaCat ? (
+              <div className="flex gap-2">
+                <select
+                  aria-label="Categoria"
+                  className={CLASSE_CAMPO}
+                  value={categoriaId}
+                  onChange={(e) => setCategoriaId(e.target.value)}
+                >
+                  <option value="">Tipo da despesa</option>
+                  {categorias.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.nome}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => setMostrandoNovaCat(true)}
+                  className="btn bg-claro/5 text-claro border border-borda hover:bg-claro/10 px-3 flex items-center justify-center font-bold text-lg"
+                  title="Cadastrar Nova Categoria"
+                >
+                  +
+                </button>
+              </div>
+            ) : (
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  className={CLASSE_CAMPO}
+                  placeholder="Nome da categoria..."
+                  value={novaCatNome}
+                  onChange={(e) => setNovaCatNome(e.target.value)}
+                  autoFocus
+                />
+                <button
+                  type="button"
+                  onClick={aoSalvarNovaCat}
+                  disabled={salvandoNovaCat}
+                  className="btn btn-primario px-3 py-2 text-xs"
+                >
+                  {salvandoNovaCat ? '...' : 'Salvar'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMostrandoNovaCat(false);
+                    setNovaCatNome('');
+                  }}
+                  className="btn btn-suave px-3 py-2 text-xs"
+                >
+                  Cancelar
+                </button>
+              </div>
+            )}
           </Campo>
         </div>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
