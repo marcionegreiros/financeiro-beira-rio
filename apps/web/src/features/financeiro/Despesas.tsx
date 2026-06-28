@@ -4,17 +4,23 @@ import {
   listarMovimentos,
   type CategoriaDespesa,
   type MovimentoLista,
+  removerDespesa,
+  verificarFechamentoStatus,
 } from '../../data/repositorios';
 import { formatReais, negar, somar, ZERO } from '../../lib/money';
-import { hojeManaus } from '../../lib/datas';
+import { hojeManaus, formatarDataBR } from '../../lib/datas';
 import { formatarDataHora, diaIso } from '../../lib/formato';
 import { useToast } from '../../components/ui/Toast';
 import { DataTable, type Coluna } from '../../components/ui/DataTable';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { CLASSE_CAMPO } from '../../components/ui/Campo';
 import { NovaDespesaModal, FORMAS_PAGAMENTO as FORMAS } from './NovaDespesaModal';
+import { AutorizacaoGerenteModal } from './AutorizacaoGerenteModal';
+import type { UsuarioAtual } from '../../data/usuario';
+import type { SupabaseClient } from '@supabase/supabase-js';
 
-export function Despesas({ usuarioId }: { usuarioId: string }) {
+export function Despesas({ usuario }: { usuario: UsuarioAtual }) {
+  const usuarioId = usuario.id;
   const toast = useToast();
   const [categorias, setCategorias] = useState<CategoriaDespesa[]>([]);
   const [movimentos, setMovimentos] = useState<MovimentoLista[]>([]);
@@ -26,8 +32,13 @@ export function Despesas({ usuarioId }: { usuarioId: string }) {
   const [de, setDe] = useState('');
   const [ate, setAte] = useState('');
 
-  // Modal
+  // Modal Lançar/Editar
   const [aberto, setAberto] = useState(false);
+  const [despesaEdicao, setDespesaEdicao] = useState<MovimentoLista | null>(null);
+
+  // Modal Autorização de Gerente para exclusão
+  const [modalAutorizarAberto, setModalAutorizarAberto] = useState(false);
+  const [idExcluirConfirmado, setIdExcluirConfirmado] = useState<string | null>(null);
 
   async function recarregar() {
     setMovimentos(await listarMovimentos(['despesa']));
@@ -78,6 +89,56 @@ export function Despesas({ usuarioId }: { usuarioId: string }) {
 
   const temFiltro = busca || filtroCategoria || de || ate;
 
+  function aoEditarClick(m: MovimentoLista) {
+    setDespesaEdicao(m);
+    setAberto(true);
+  }
+
+  async function aoExcluirClick(m: MovimentoLista) {
+    const dia = diaIso(m.dataHora);
+    try {
+      const statusFechamento = await verificarFechamentoStatus(dia);
+      const isFechado = statusFechamento === 'travado';
+
+      if (isFechado) {
+        const temPermissaoRetroativa =
+          usuario.permissoes.has('editar_lancamentos_retroativos') ||
+          usuario.permissoes.has('reabrir_fechamento');
+
+        if (temPermissaoRetroativa) {
+          const confirmar = window.confirm(
+            `Atenção: o caixa de ${formatarDataBR(dia)} já está fechado. Como você possui permissão de gerente, você pode prosseguir. Deseja realmente excluir esta despesa?`
+          );
+          if (confirmar) {
+            await executarExclusao(m.id);
+          }
+        } else {
+          setIdExcluirConfirmado(m.id);
+          setModalAutorizarAberto(true);
+        }
+      } else {
+        const confirmar = window.confirm('Deseja realmente excluir esta despesa?');
+        if (confirmar) {
+          await executarExclusao(m.id);
+        }
+      }
+    } catch (err) {
+      console.error(err);
+      toast.erro('Erro ao verificar status do caixa.');
+    }
+  }
+
+  async function executarExclusao(id: string, clientOverride?: SupabaseClient) {
+    try {
+      await removerDespesa(id, usuarioId, clientOverride);
+      toast.sucesso('Despesa removida com sucesso.');
+      await recarregar();
+    } catch (err) {
+      console.error(err);
+      toast.erro('Erro ao excluir a despesa.');
+    }
+  }
+
   const colunas: Coluna<MovimentoLista>[] = [
     {
       chave: 'data',
@@ -113,6 +174,38 @@ export function Despesas({ usuarioId }: { usuarioId: string }) {
           {formatReais(m.valorCentavos < 0n ? negar(m.valorCentavos) : m.valorCentavos)}
         </span>
       ),
+    },
+    {
+      chave: 'acoes',
+      titulo: 'Ações',
+      alinhar: 'right',
+      render: (m) => {
+        const isFechado = m.fechamentoStatus === 'travado';
+        return (
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              className="text-suave hover:text-claro p-1 rounded hover:bg-claro/5 transition-colors"
+              title={isFechado ? 'Editar despesa (caixa fechado)' : 'Editar despesa'}
+              onClick={() => aoEditarClick(m)}
+            >
+              {isFechado ? (
+                <IconeLock className="h-4 w-4 text-ambar" />
+              ) : (
+                <IconePencil className="h-4 w-4" />
+              )}
+            </button>
+            <button
+              type="button"
+              className="text-suave hover:text-negativo p-1 rounded hover:bg-claro/5 transition-colors"
+              title="Excluir despesa"
+              onClick={() => aoExcluirClick(m)}
+            >
+              <IconeTrash className="h-4 w-4" />
+            </button>
+          </div>
+        );
+      },
     },
   ];
 
@@ -197,10 +290,29 @@ export function Despesas({ usuarioId }: { usuarioId: string }) {
 
       <NovaDespesaModal
         aberto={aberto}
-        aoFechar={() => setAberto(false)}
+        aoFechar={() => {
+          setAberto(false);
+          setDespesaEdicao(null);
+        }}
         usuarioId={usuarioId}
+        usuario={usuario}
+        despesaEdicao={despesaEdicao}
         data={hojeManaus()}
         aoSalvo={() => void recarregar()}
+      />
+
+      <AutorizacaoGerenteModal
+        aberto={modalAutorizarAberto}
+        aoFechar={() => {
+          setModalAutorizarAberto(false);
+          setIdExcluirConfirmado(null);
+        }}
+        permissaoRequerida="editar_lancamentos_retroativos"
+        aoAutorizado={(managerClient) => {
+          if (idExcluirConfirmado) {
+            void executarExclusao(idExcluirConfirmado, managerClient);
+          }
+        }}
       />
     </div>
   );
@@ -210,6 +322,30 @@ function IconePlus() {
   return (
     <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+function IconeLock({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+    </svg>
+  );
+}
+
+function IconePencil({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+    </svg>
+  );
+}
+
+function IconeTrash({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
     </svg>
   );
 }

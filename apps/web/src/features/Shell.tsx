@@ -447,7 +447,7 @@ export function Shell({ usuario }: { usuario: UsuarioAtual }) {
                   podeReabrir={usuario.permissoes.has('reabrir_fechamento')}
                 />
               )}
-              {tela === 'despesas' && podeLancarDespesa && <Despesas usuarioId={usuario.id} />}
+              {tela === 'despesas' && podeLancarDespesa && <Despesas usuario={usuario} />}
               {tela === 'transferencias' && (podeTransferir || podeGerenciarContas) && (
                 <ContasETransferencias
                   usuarioId={usuario.id}

@@ -378,7 +378,7 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
 
   async function excluirDespesa(id: string) {
     try {
-      await removerDespesa(id);
+      await removerDespesa(id, usuarioId ?? '');
       await recarregarDespesas();
       toast.sucesso('Despesa removida.');
     } catch (e) {

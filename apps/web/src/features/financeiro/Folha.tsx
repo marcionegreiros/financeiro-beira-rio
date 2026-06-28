@@ -249,7 +249,7 @@ export function Folha({ usuarioId }: { usuarioId: string }) {
   async function aoExcluirVale(id: string) {
     if (!confirm('Deseja realmente excluir este vale? Isso estornará o saldo para a conta correspondente.')) return;
     try {
-      await removerDespesa(id);
+      await removerDespesa(id, usuarioId);
       toast.sucesso('Vale excluído com sucesso.');
       await recarregar();
     } catch (e) {

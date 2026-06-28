@@ -6,6 +6,7 @@
  * as telas continuam iguais.
  */
 import { supabase } from './supabase';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { paraCentavos, litrosParaMililitros, centavosParaNumero, quantidadeParaNumero } from './conversao';
 import { precoVigenteEm, custoVigenteEm, type RegistroVigencia } from '../domain/precos';
 import { capitalTotal, capitalOperacional } from '../domain/capital';
@@ -1089,9 +1090,11 @@ export async function lancarDespesa(
   formaPagamento: string | null,
   descricao: string,
   tags: string[],
-  criadoPor: string
+  criadoPor: string,
+  clientOverride?: SupabaseClient
 ): Promise<void> {
-  const { error } = await supabase.from('movimento').insert({
+  const s = clientOverride || supabase;
+  const { error } = await s.from('movimento').insert({
     id,
     tipo: 'despesa',
     conta_id: contaOrigemId,
@@ -1110,7 +1113,7 @@ export async function lancarDespesa(
     acao: 'criar',
     usuarioId: criadoPor,
     depois: { valor_centavos: -centavosParaNumero(valorCentavos), descricao, forma_pagamento: formaPagamento },
-  });
+  }, clientOverride);
 }
 
 /** Uma despesa do dia (movimento tipo='despesa'), com magnitude positiva. */
@@ -1201,17 +1204,19 @@ export async function vincularDespesasAoFechamento(fechamentoId: string, ids: st
 }
 
 /** Remove uma despesa ou vale (e reverte status de fechamento_folha se aplicável). */
-export async function removerDespesa(id: string): Promise<void> {
-  const { data: mov, error: errMov } = await supabase
+export async function removerDespesa(id: string, usuarioId: string, clientOverride?: SupabaseClient): Promise<void> {
+  const s = clientOverride || supabase;
+  
+  const { data: mov, error: errMov } = await s
     .from('movimento')
-    .select('tipo, funcionario_id, data_hora')
+    .select('tipo, funcionario_id, data_hora, valor_centavos, conta_id, categoria_despesa_id, forma_pagamento, descricao, tags')
     .eq('id', id)
     .maybeSingle();
 
   if (errMov) throw errMov;
 
   if (mov && mov.tipo === 'despesa' && mov.funcionario_id) {
-    const { data: folha } = await supabase
+    const { data: folha } = await s
       .from('fechamento_folha')
       .select('id')
       .eq('funcionario_id', mov.funcionario_id)
@@ -1219,15 +1224,95 @@ export async function removerDespesa(id: string): Promise<void> {
       .maybeSingle();
 
     if (folha) {
-      await supabase
+      await s
         .from('fechamento_folha')
         .update({ status: 'aberto', pago_em: null })
         .eq('id', folha.id);
     }
   }
 
-  const { error } = await supabase.from('movimento').delete().eq('id', id);
+  const { error } = await s.from('movimento').delete().eq('id', id);
   if (error) throw error;
+
+  if (mov) {
+    await registrarAuditoria({
+      entidade: 'despesa',
+      entidadeId: id,
+      acao: 'remover',
+      usuarioId,
+      antes: {
+        valor_centavos: mov.valor_centavos,
+        conta_id: mov.conta_id,
+        categoria_despesa_id: mov.categoria_despesa_id,
+        data_hora: mov.data_hora,
+        forma_pagamento: mov.forma_pagamento,
+        descricao: mov.descricao,
+        tags: mov.tags,
+      },
+    });
+  }
+}
+
+export async function atualizarDespesa(
+  id: string,
+  contaOrigemId: string,
+  categoriaId: string,
+  valorCentavos: Centavos,
+  dataHora: string,
+  formaPagamento: string | null,
+  descricao: string,
+  tags: string[],
+  usuarioId: string,
+  clientOverride?: SupabaseClient
+): Promise<void> {
+  const s = clientOverride || supabase;
+
+  // Carregar dados anteriores para auditoria
+  const { data: antes, error: eGet } = await s
+    .from('movimento')
+    .select('valor_centavos, conta_id, categoria_despesa_id, data_hora, forma_pagamento, descricao, tags')
+    .eq('id', id)
+    .single();
+  if (eGet) throw eGet;
+
+  const { error } = await s
+    .from('movimento')
+    .update({
+      conta_id: contaOrigemId,
+      valor_centavos: -centavosParaNumero(valorCentavos),
+      data_hora: dataHora,
+      categoria_despesa_id: categoriaId,
+      forma_pagamento: formaPagamento,
+      descricao,
+      tags,
+    })
+    .eq('id', id);
+  if (error) throw error;
+
+  await registrarAuditoria({
+    entidade: 'despesa',
+    entidadeId: id,
+    acao: 'editar',
+    usuarioId,
+    antes: {
+      valor_centavos: antes.valor_centavos,
+      conta_id: antes.conta_id,
+      categoria_despesa_id: antes.categoria_despesa_id,
+      data_hora: antes.data_hora,
+      forma_pagamento: antes.forma_pagamento,
+      descricao: antes.descricao,
+      tags: antes.tags,
+    },
+    depois: {
+      valor_centavos: -centavosParaNumero(valorCentavos),
+      conta_id: contaOrigemId,
+      categoria_despesa_id: categoriaId,
+      data_hora: dataHora,
+      forma_pagamento: formaPagamento,
+      descricao,
+      tags,
+    },
+  });
 }
 
 export async function verificarFechamentoStatus(data: string): Promise<'aberto' | 'travado' | 'inexistente'> {
@@ -1710,8 +1795,9 @@ export async function registrarAuditoria(params: {
   usuarioId: string;
   antes?: unknown;
   depois?: unknown;
-}): Promise<void> {
-  const { error } = await supabase.from('auditoria').insert({
+}, clientOverride?: SupabaseClient): Promise<void> {
+  const s = clientOverride || supabase;
+  const { error } = await s.from('auditoria').insert({
     id: uuidv7(),
     entidade: params.entidade,
     entidade_id: params.entidadeId,
@@ -1764,13 +1850,18 @@ export interface MovimentoLista {
   descricao: string | null;
   formaPagamento: string | null;
   tags: string[];
+  contaId: string | null;
   contaNome: string | null;
   contraparteNome: string | null;
+  categoriaDespesaId: string | null;
   categoriaNome: string | null;
   socioNome: string | null;
   usuarioNome: string | null;
   funcionarioId: string | null;
   funcionarioNome: string | null;
+  fechamentoId: string | null;
+  fechamentoStatus: 'aberto' | 'travado' | null;
+  fechamentoData: string | null;
 }
 
 type RelNome = { nome: string } | { nome: string }[] | null;
@@ -1789,10 +1880,11 @@ export async function listarMovimentos(tipos?: string[], limite = 500): Promise<
   let consulta = supabase
     .from('movimento')
     .select(
-      'id,tipo,valor_centavos,data_hora,descricao,forma_pagamento,tags,' +
+      'id,tipo,valor_centavos,data_hora,descricao,forma_pagamento,tags,conta_id,categoria_despesa_id,fechamento_id,' +
         'conta:conta_id(nome),contraparte:contraparte_conta_id(nome),' +
         'categoria:categoria_despesa_id(nome),socio:socio_id(nome),usuario:criado_por(nome),' +
-        'funcionario:funcionario_id(id,nome)',
+        'funcionario:funcionario_id(id,nome),' +
+        'fechamento:fechamento_id(id,status,data)'
     )
     .order('data_hora', { ascending: false })
     .limit(limite);
@@ -1810,30 +1902,42 @@ export async function listarMovimentos(tipos?: string[], limite = 500): Promise<
     descricao: string | null;
     forma_pagamento: string | null;
     tags: string[] | null;
+    conta_id: string | null;
+    categoria_despesa_id: string | null;
+    fechamento_id: string | null;
     conta: RelNome;
     contraparte: RelNome;
     categoria: RelNome;
     socio: RelNome;
     usuario: RelNome;
     funcionario: { id: string; nome: string } | { id: string; nome: string }[] | null;
+    fechamento: { id: string; status: string; data: string } | { id: string; status: string; data: string }[] | null;
   }>;
 
-  return linhas.map((m) => ({
-    id: m.id,
-    tipo: m.tipo,
-    dataHora: m.data_hora,
-    valorCentavos: asCentavos(BigInt(m.valor_centavos)),
-    descricao: m.descricao,
-    formaPagamento: m.forma_pagamento,
-    tags: m.tags ?? [],
-    contaNome: nomeRel(m.conta),
-    contraparteNome: nomeRel(m.contraparte),
-    categoriaNome: nomeRel(m.categoria),
-    socioNome: nomeRel(m.socio),
-    usuarioNome: nomeRel(m.usuario),
-    funcionarioId: m.funcionario ? (Array.isArray(m.funcionario) ? m.funcionario[0]?.id : m.funcionario.id) ?? null : null,
-    funcionarioNome: nomeRel(m.funcionario),
-  }));
+  return linhas.map((m) => {
+    const fech = Array.isArray(m.fechamento) ? m.fechamento[0] : m.fechamento;
+    return {
+      id: m.id,
+      tipo: m.tipo,
+      dataHora: m.data_hora,
+      valorCentavos: asCentavos(BigInt(m.valor_centavos)),
+      descricao: m.descricao,
+      formaPagamento: m.forma_pagamento,
+      tags: m.tags ?? [],
+      contaId: m.conta_id,
+      contaNome: nomeRel(m.conta),
+      contraparteNome: nomeRel(m.contraparte),
+      categoriaDespesaId: m.categoria_despesa_id,
+      categoriaNome: nomeRel(m.categoria),
+      socioNome: nomeRel(m.socio),
+      usuarioNome: nomeRel(m.usuario),
+      funcionarioId: m.funcionario ? (Array.isArray(m.funcionario) ? m.funcionario[0]?.id : m.funcionario.id) ?? null : null,
+      funcionarioNome: nomeRel(m.funcionario),
+      fechamentoId: m.fechamento_id,
+      fechamentoStatus: fech ? (fech.status === 'travado' || fech.status === 'confirmado' ? 'travado' : 'aberto') : null,
+      fechamentoData: fech?.data ?? null,
+    };
+  });
 }
 
 export interface FechamentoResumo {

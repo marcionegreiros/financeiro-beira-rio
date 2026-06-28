@@ -16,15 +16,15 @@ export function Campo({
   children: ReactNode;
 }) {
   return (
-    <label className="flex h-full flex-col relative pb-5">
-      <span className="flex-1 flex items-end pb-1.5 text-sm font-medium text-claro leading-tight">
+    <label className="flex h-full flex-col">
+      <span className="flex items-end pb-1.5 text-sm font-medium text-claro leading-tight">
         <span>
           {label}
           {obrigatorio && <span className="text-negativo"> *</span>}
         </span>
       </span>
       {children}
-      {dica && <span className="absolute bottom-0 left-1 text-[11px] text-suave">{dica}</span>}
+      {dica && <span className="mt-1 text-[11px] text-suave">{dica}</span>}
     </label>
   );
 }

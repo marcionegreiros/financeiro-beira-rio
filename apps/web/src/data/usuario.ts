@@ -5,6 +5,7 @@
  * Além das permissões globais, o usuário carrega a ACL fina de conta
  * (`usuario_conta`): quais contas pode VER e quais pode MOVIMENTAR (§5.4).
  */
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { supabase } from './supabase';
 
 export interface UsuarioAtual {
@@ -62,3 +63,58 @@ export async function carregarUsuarioAtual(): Promise<UsuarioAtual | null> {
     contasMovimentar,
   };
 }
+
+export interface AutorizacaoResultado {
+  sucesso: boolean;
+  erro?: string;
+  client?: SupabaseClient;
+  usuarioId?: string;
+}
+
+export async function autorizarAcaoGerente(
+  email: string,
+  pass: string,
+  permissaoRequerida: string
+): Promise<AutorizacaoResultado> {
+  const url = import.meta.env.VITE_SUPABASE_URL ?? '';
+  const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY ?? '';
+  
+  const clientTmp = createClient(url, anonKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+
+  const { data: authData, error: authErr } = await clientTmp.auth.signInWithPassword({
+    email,
+    password: pass,
+  });
+
+  if (authErr || !authData.user) {
+    return { sucesso: false, erro: 'E-mail ou senha incorretos.' };
+  }
+
+  // Verificar se o usuário possui a permissão necessária
+  const { data: usr, error: usrErr } = await clientTmp
+    .from('usuario')
+    .select('id, ativo, usuario_permissao(permissao_chave)')
+    .eq('auth_uid', authData.user.id)
+    .single();
+
+  if (usrErr || !usr) {
+    return { sucesso: false, erro: 'Usuário correspondente não encontrado no sistema.' };
+  }
+
+  if (!usr.ativo) {
+    return { sucesso: false, erro: 'Este usuário gerente está inativo.' };
+  }
+
+  const permissoes = new Set(
+    ((usr.usuario_permissao as { permissao_chave: string }[]) ?? []).map((p) => p.permissao_chave)
+  );
+
+  if (!permissoes.has(permissaoRequerida)) {
+    return { sucesso: false, erro: 'Este usuário não possui a permissão necessária para autorizar.' };
+  }
+
+  return { sucesso: true, client: clientTmp, usuarioId: usr.id };
+}
+
