@@ -1,4 +1,4 @@
-import { useState, useEffect, type FormEvent } from 'react';
+import { useState, useEffect, useRef, type FormEvent } from 'react';
 import {
   salvarProduto,
   listarCategorias,
@@ -9,11 +9,18 @@ import {
   listarPrecosProduto,
   listarCustosProduto,
   listarEntradasMercadoriaProduto,
-  adicionarEntradaMercadoria,
   obterDadosProdutosNaData,
   removerPrecoProduto,
   removerCustoProduto,
   removerEntradaMercadoria,
+  atualizarEntradaMercadoria,
+  registrarEntradaComPreco,
+  ultimoCustoEntrada,
+  listarSaidasProdutoPeriodo,
+  entradasMercadoriaDoDia,
+  listarNotasMercadoria,
+  listarItensNotaMercadoria,
+  type NotaResumo,
   removerProduto,
   verificarFechamentoStatus,
   type Categoria,
@@ -25,13 +32,15 @@ import {
   definirEstoqueInicialProduto,
   buscarEstoqueInicialProduto
 } from '../../data/repositorios';
+import { recalcularCascata } from '../../data/fechamento';
 import { uuidv7 } from '../../lib/uuidv7';
 import { useToast } from '../../components/ui/Toast';
 import { Modal } from '../../components/ui/Modal';
 import { DataTable, type Coluna } from '../../components/ui/DataTable';
 import { Campo, CLASSE_CAMPO } from '../../components/ui/Campo';
+import { Combobox } from '../../components/ui/Combobox';
 import { hojeManaus, agoraManausISO, formatarDataBR } from '../../lib/datas';
-import { parseReais, formatReais, asCentavos } from '../../lib/money';
+import { parseReais, formatReais, asCentavos, type Centavos } from '../../lib/money';
 import type { UsuarioAtual } from '../../data/usuario';
 
 const MODOS: Record<string, string> = {
@@ -44,12 +53,41 @@ interface ProdutosProps {
   dataSelecionada: string;
 }
 
+/** Uma linha da notinha de entrada (em memória até salvar). */
+interface NotaLinha {
+  /** id da entrada_mercadoria quando a linha já existe (nota em edição). */
+  entradaId?: string;
+  produtoId: string;
+  nome: string;
+  quantidade: number;
+  custo: Centavos;
+  precoVenda: Centavos | null;
+  precoVendaVigente: Centavos | null;
+}
+
 export function Produtos({ usuario, dataSelecionada }: ProdutosProps) {
   const toast = useToast();
   const [produtos, setProdutos] = useState<ProdutoNaData[]>([]);
   const [categorias, setCategorias] = useState<Categoria[]>([]);
   const [carregando, setCarregando] = useState(true);
   const [filtroStatus, setFiltroStatus] = useState<'ativos' | 'inativos' | 'todos'>('ativos');
+
+  // Filtros gerais e período (Req 3)
+  const [busca, setBusca] = useState(() => localStorage.getItem('pontao_filtro_produtos_busca') ?? '');
+  const [filtroCategoriaNome, setFiltroCategoriaNome] = useState(() => localStorage.getItem('pontao_filtro_produtos_categoria') ?? '');
+  const [de, setDe] = useState(() => localStorage.getItem('pontao_filtro_produtos_de') ?? '');
+  const [ate, setAte] = useState(() => localStorage.getItem('pontao_filtro_produtos_ate') ?? '');
+  const [saidasPorProduto, setSaidasPorProduto] = useState<Map<string, number>>(new Map());
+  const [entradasDoDia, setEntradasDoDia] = useState<Map<string, number>>(new Map());
+
+  useEffect(() => { localStorage.setItem('pontao_filtro_produtos_busca', busca); }, [busca]);
+  useEffect(() => { localStorage.setItem('pontao_filtro_produtos_categoria', filtroCategoriaNome); }, [filtroCategoriaNome]);
+  useEffect(() => { localStorage.setItem('pontao_filtro_produtos_de', de); }, [de]);
+  useEffect(() => { localStorage.setItem('pontao_filtro_produtos_ate', ate); }, [ate]);
+
+  // Período efetivo das SAÍDAS: usa o filtro; sem filtro, mês corrente até a data selecionada.
+  const periodoSaidasDe = de || `${dataSelecionada.slice(0, 8)}01`;
+  const periodoSaidasAte = ate || dataSelecionada;
 
   const podeDefinirPrecoCusto = usuario?.permissoes.has('definir_preco_custo') ?? true;
   // Cadastrar/editar produto e dar entrada de estoque exigem `cadastrar_produto`.
@@ -67,6 +105,33 @@ export function Produtos({ usuario, dataSelecionada }: ProdutosProps) {
   const [modalCustoAberto, setModalCustoAberto] = useState(false);
   const [modalAcoesAberto, setModalAcoesAberto] = useState(false);
   const [modalCategoriasAberto, setModalCategoriasAberto] = useState(false);
+  const [modalNotaAberto, setModalNotaAberto] = useState(false);
+  const [filtrosAbertos, setFiltrosAbertos] = useState(false);
+  const [menuAberto, setMenuAberto] = useState(false);
+  const gearRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function aoClicarFora(e: MouseEvent) {
+      if (gearRef.current && !gearRef.current.contains(e.target as Node)) {
+        setMenuAberto(false);
+      }
+    }
+    document.addEventListener('mousedown', aoClicarFora);
+    return () => document.removeEventListener('mousedown', aoClicarFora);
+  }, []);
+
+  // Notinha multi-produto (Req 4 e 6) + edição de nota existente
+  const [notaData, setNotaData] = useState('');
+  const [notaLinhas, setNotaLinhas] = useState<NotaLinha[]>([]);
+  const [notaProdutoId, setNotaProdutoId] = useState('');
+  const [notaQtd, setNotaQtd] = useState('');
+  const [notaCusto, setNotaCusto] = useState('');
+  const [notaPreco, setNotaPreco] = useState('');
+  const [salvandoNota, setSalvandoNota] = useState(false);
+  const [notaId, setNotaId] = useState('');
+  const [notaModo, setNotaModo] = useState<'nova' | 'edicao'>('nova');
+  const [notaIdsOriginais, setNotaIdsOriginais] = useState<string[]>([]);
+  const [notasExistentes, setNotasExistentes] = useState<NotaResumo[]>([]);
 
   // Gestão de categorias de produto
   const [catEditandoId, setCatEditandoId] = useState<string | null>(null);
@@ -90,7 +155,9 @@ export function Produtos({ usuario, dataSelecionada }: ProdutosProps) {
   // 2. Entrada de Estoque
   const [entradaQtdStr, setEntradaQtdStr] = useState('');
   const [entradaCustoStr, setEntradaCustoStr] = useState('');
+  const [entradaPrecoVendaStr, setEntradaPrecoVendaStr] = useState('');
   const [entradaData, setEntradaData] = useState('');
+  const [entradaEditandoId, setEntradaEditandoId] = useState<string | null>(null);
   const [adicionandoEntrada, setAdicionandoEntrada] = useState(false);
   const [entradasHistorico, setEntradasHistorico] = useState<EntradaMercadoria[]>([]);
   const [carregandoEntradas, setCarregandoEntradas] = useState(false);
@@ -114,8 +181,12 @@ export function Produtos({ usuario, dataSelecionada }: ProdutosProps) {
   async function carregarProdutos() {
     setCarregando(true);
     try {
-      const dados = await obterDadosProdutosNaData(dataSelecionada);
+      const [dados, entradas] = await Promise.all([
+        obterDadosProdutosNaData(dataSelecionada),
+        entradasMercadoriaDoDia(dataSelecionada),
+      ]);
       setProdutos(dados);
+      setEntradasDoDia(entradas);
     } catch (err) {
       console.error(err);
       toast.erro('Falha ao carregar produtos na data selecionada.');
@@ -146,7 +217,14 @@ export function Produtos({ usuario, dataSelecionada }: ProdutosProps) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dataSelecionada]);
 
-
+  // Saídas (vendido) por produto no período efetivo (Req 3).
+  useEffect(() => {
+    let ativo = true;
+    listarSaidasProdutoPeriodo(periodoSaidasDe, periodoSaidasAte)
+      .then((m) => { if (ativo) setSaidasPorProduto(m); })
+      .catch((err) => console.error('Falha ao calcular saídas:', err));
+    return () => { ativo = false; };
+  }, [periodoSaidasDe, periodoSaidasAte, produtos]);
 
   function abrirNovo() {
     setNome('');
@@ -183,20 +261,30 @@ export function Produtos({ usuario, dataSelecionada }: ProdutosProps) {
     setModalEditarAberto(true);
   }
 
+  function preencherReais(valor: Centavos | number | null, set: (s: string) => void) {
+    if (valor === null) {
+      set('');
+      return;
+    }
+    set((Number(valor) / 100).toFixed(2).replace('.', ','));
+  }
+
   async function abrirEstoque(p: ProdutoNaData) {
     setSelecionado(p);
     setEntradaQtdStr('');
-    
-    // Custo unitário padrão é o custo ativo na data selecionada
-    if (p.custo !== null) {
-      const valorReais = Number(p.custo) / 100;
-      setEntradaCustoStr(valorReais.toFixed(2).replace('.', ','));
-    } else {
-      setEntradaCustoStr('');
-    }
+    setEntradaEditandoId(null);
+
+    // Custo pré-preenchido com o ÚLTIMO custo de entrada (fallback no custo vigente).
+    setEntradaCustoStr('');
+    void ultimoCustoEntrada(p.id)
+      .then((ultimo) => preencherReais(ultimo ?? p.custo, setEntradaCustoStr))
+      .catch(() => preencherReais(p.custo, setEntradaCustoStr));
+    // Preço de venda pré-preenchido com o vigente.
+    preencherReais(p.precoVenda, setEntradaPrecoVendaStr);
+
     setEntradaData(dataSelecionada);
     setModalEstoqueAberto(true);
-    
+
     setCarregandoEntradas(true);
     try {
       const hist = await listarEntradasMercadoriaProduto(p.id);
@@ -342,7 +430,47 @@ export function Produtos({ usuario, dataSelecionada }: ProdutosProps) {
     }
   }
 
-  async function aoAdicionarEntrada(e: FormEvent) {
+  /**
+   * Guarda de caixa para mexer numa entrada na `data`: se o dia está travado, exige
+   * `editar_lancamentos_retroativos` (senão bloqueia, pedindo gerente/reabrir).
+   * Retorna { recalcular } (recalcular=true quando mexeu em dia travado) ou null
+   * (bloqueado/cancelado).
+   */
+  async function guardaEntradaNaData(data: string, acao: string): Promise<{ recalcular: boolean } | null> {
+    const status = await verificarFechamentoStatus(data);
+    if (status === 'travado') {
+      const pode = usuario?.permissoes.has('editar_lancamentos_retroativos') ?? false;
+      if (!pode) {
+        toast.erro(`O caixa do dia ${formatarDataBR(data)} já está encerrado. ${acao} exige um gerente — reabra o caixa.`);
+        return null;
+      }
+      if (!confirm(`O caixa do dia ${formatarDataBR(data)} já foi encerrado. Como gerente, deseja prosseguir? Isso recalculará a cascata dos saldos.`)) {
+        return null;
+      }
+      return { recalcular: true };
+    }
+    return { recalcular: false };
+  }
+
+  function aoEditarEntrada(e: EntradaMercadoria) {
+    setEntradaEditandoId(e.id);
+    setEntradaQtdStr(String(e.quantidade));
+    preencherReais(e.custoUnitarioCentavos, setEntradaCustoStr);
+    setEntradaData(e.data);
+  }
+
+  function cancelarEdicaoEntrada() {
+    setEntradaEditandoId(null);
+    setEntradaQtdStr('');
+    if (selecionado) {
+      void ultimoCustoEntrada(selecionado.id)
+        .then((ultimo) => preencherReais(ultimo ?? selecionado.custo, setEntradaCustoStr))
+        .catch(() => preencherReais(selecionado.custo, setEntradaCustoStr));
+    }
+    setEntradaData(dataSelecionada);
+  }
+
+  async function aoSalvarEntrada(e: FormEvent) {
     e.preventDefault();
     if (!selecionado) return;
     const qtd = Number(entradaQtdStr);
@@ -359,19 +487,41 @@ export function Produtos({ usuario, dataSelecionada }: ProdutosProps) {
       toast.erro('Informe a data da entrada.');
       return;
     }
+
+    const guarda = await guardaEntradaNaData(entradaData, entradaEditandoId ? 'Editar a entrada' : 'Lançar a entrada');
+    if (!guarda) return;
+
     setAdicionandoEntrada(true);
     try {
-      await adicionarEntradaMercadoria(uuidv7(), selecionado.id, qtd, custo, entradaData);
-      toast.sucesso('Entrada de mercadoria registrada.');
+      if (entradaEditandoId) {
+        await atualizarEntradaMercadoria(entradaEditandoId, {
+          quantidade: qtd,
+          custoUnitarioCentavos: custo,
+          data: entradaData,
+        });
+        toast.sucesso('Entrada atualizada.');
+      } else {
+        const preco = parseReais(entradaPrecoVendaStr);
+        await registrarEntradaComPreco({
+          produtoId: selecionado.id,
+          quantidade: qtd,
+          custo,
+          data: entradaData,
+          precoVenda: preco > 0n ? preco : null,
+          precoVendaVigente: selecionado.precoVenda,
+        });
+        toast.sucesso('Entrada de mercadoria registrada.');
+      }
+      if (guarda.recalcular) await recalcularCascata(entradaData, true);
+
       setEntradaQtdStr('');
-      
-      // Recarregar histórico e tabela principal
+      setEntradaEditandoId(null);
       const hist = await listarEntradasMercadoriaProduto(selecionado.id);
       setEntradasHistorico(hist);
       await carregarProdutos();
     } catch (err) {
       console.error(err);
-      toast.erro('Erro ao registrar entrada de estoque.');
+      toast.erro('Erro ao salvar entrada de estoque.');
     } finally {
       setAdicionandoEntrada(false);
     }
@@ -457,8 +607,9 @@ export function Produtos({ usuario, dataSelecionada }: ProdutosProps) {
       }
 
       await removerEntradaMercadoria(e.id);
+      if (status === 'travado') await recalcularCascata(e.data, true);
       toast.sucesso('Entrada de mercadoria excluída.');
-      
+
       if (selecionado) {
         setEntradasHistorico(await listarEntradasMercadoriaProduto(selecionado.id));
       }
@@ -466,6 +617,165 @@ export function Produtos({ usuario, dataSelecionada }: ProdutosProps) {
     } catch (err) {
       console.error(err);
       toast.erro('Erro ao excluir entrada de mercadoria.');
+    }
+  }
+
+  // ---- Notinha multi-produto (Req 4 e 6), com edição de nota existente ----
+  function limparEditorLinhaNota() {
+    setNotaProdutoId('');
+    setNotaQtd('');
+    setNotaCusto('');
+    setNotaPreco('');
+  }
+
+  function novaNota() {
+    setNotaModo('nova');
+    setNotaId(uuidv7());
+    setNotaIdsOriginais([]);
+    setNotaLinhas([]);
+    limparEditorLinhaNota();
+    setNotaData(dataSelecionada);
+  }
+
+  async function abrirNota() {
+    novaNota();
+    setModalNotaAberto(true);
+    try {
+      setNotasExistentes(await listarNotasMercadoria());
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  async function aoEditarNotaExistente(id: string) {
+    if (!id) return;
+    try {
+      const { data, itens } = await listarItensNotaMercadoria(id);
+      setNotaModo('edicao');
+      setNotaId(id);
+      setNotaData(data);
+      setNotaIdsOriginais(itens.map((i) => i.entradaId));
+      setNotaLinhas(
+        itens.map((i) => {
+          const prod = produtos.find((p) => p.id === i.produtoId);
+          return {
+            entradaId: i.entradaId,
+            produtoId: i.produtoId,
+            nome: i.nome,
+            quantidade: i.quantidade,
+            custo: i.custoUnitarioCentavos,
+            precoVenda: null,
+            precoVendaVigente: prod?.precoVenda ?? null,
+          };
+        }),
+      );
+      limparEditorLinhaNota();
+    } catch (err) {
+      console.error(err);
+      toast.erro('Falha ao carregar a nota.');
+    }
+  }
+
+  function aoSelecionarProdutoNota(produtoId: string) {
+    setNotaProdutoId(produtoId);
+    const p = produtos.find((x) => x.id === produtoId);
+    preencherReais(p?.precoVenda ?? null, setNotaPreco);
+    setNotaCusto('');
+    if (produtoId) {
+      void ultimoCustoEntrada(produtoId)
+        .then((ultimo) => preencherReais(ultimo ?? p?.custo ?? null, setNotaCusto))
+        .catch(() => preencherReais(p?.custo ?? null, setNotaCusto));
+    }
+  }
+
+
+
+  function adicionarLinhaNota() {
+    const p = produtos.find((x) => x.id === notaProdutoId);
+    if (!p) {
+      toast.erro('Selecione um produto.');
+      return;
+    }
+    const qtd = Number(notaQtd);
+    if (isNaN(qtd) || qtd <= 0) {
+      toast.erro('Informe uma quantidade válida.');
+      return;
+    }
+    const custo = parseReais(notaCusto);
+    if (custo <= 0n) {
+      toast.erro('Informe um custo unitário válido.');
+      return;
+    }
+    const preco = parseReais(notaPreco);
+    setNotaLinhas((linhas) => [
+      ...linhas,
+      {
+        produtoId: p.id,
+        nome: p.nome,
+        quantidade: qtd,
+        custo,
+        precoVenda: preco > 0n ? preco : null,
+        precoVendaVigente: p.precoVenda,
+      },
+    ]);
+    setNotaProdutoId('');
+    setNotaQtd('');
+    setNotaCusto('');
+    setNotaPreco('');
+  }
+
+  function removerLinhaNota(index: number) {
+    setNotaLinhas((linhas) => linhas.filter((_, i) => i !== index));
+  }
+
+  async function salvarNota() {
+    if (notaLinhas.length === 0) {
+      toast.erro('Adicione ao menos um produto à nota.');
+      return;
+    }
+    if (!notaData) {
+      toast.erro('Informe a data da nota.');
+      return;
+    }
+    const guarda = await guardaEntradaNaData(notaData, 'Salvar a nota');
+    if (!guarda) return;
+
+    setSalvandoNota(true);
+    try {
+      // Linhas removidas (estavam na nota e saíram) → apagar.
+      const idsAtuais = new Set(notaLinhas.filter((l) => l.entradaId).map((l) => l.entradaId));
+      for (const idOrig of notaIdsOriginais) {
+        if (!idsAtuais.has(idOrig)) await removerEntradaMercadoria(idOrig);
+      }
+      // Linhas existentes alteradas → atualizar; linhas novas → inserir (com nota_id).
+      for (const linha of notaLinhas) {
+        if (linha.entradaId) {
+          await atualizarEntradaMercadoria(linha.entradaId, {
+            quantidade: linha.quantidade,
+            custoUnitarioCentavos: linha.custo,
+            data: notaData,
+          });
+        } else {
+          await registrarEntradaComPreco({
+            produtoId: linha.produtoId,
+            quantidade: linha.quantidade,
+            custo: linha.custo,
+            data: notaData,
+            precoVenda: linha.precoVenda,
+            precoVendaVigente: linha.precoVendaVigente,
+            notaId,
+          });
+        }
+      }
+      if (guarda.recalcular) await recalcularCascata(notaData, true);
+      toast.sucesso(notaModo === 'edicao' ? 'Nota atualizada.' : `Nota lançada: ${notaLinhas.length} ${notaLinhas.length === 1 ? 'item' : 'itens'}.`);
+      setModalNotaAberto(false);
+      await carregarProdutos();
+    } catch (err) {
+      console.error(err);
+      toast.erro('Erro ao salvar a nota de entrada.');
+    } finally {
+      setSalvandoNota(false);
     }
   }
 
@@ -640,6 +950,24 @@ export function Produtos({ usuario, dataSelecionada }: ProdutosProps) {
         );
       },
     },
+    // Coluna "Entrada" só aparece nos dias com entrada lançada (mostra a do dia selecionado).
+    ...(entradasDoDia.size > 0
+      ? [{
+          chave: 'entradaDia',
+          titulo: 'Entrada',
+          alinhar: 'right' as const,
+          render: (p: ProdutoNaData) => {
+            const q = entradasDoDia.get(p.id) ?? 0;
+            return <span className="numeros text-claro/60">{q > 0 ? `+${q}` : '—'}</span>;
+          },
+        }]
+      : []),
+    {
+      chave: 'saidas',
+      titulo: 'Saídas',
+      alinhar: 'right',
+      render: (p) => <span className="numeros text-suave">{saidasPorProduto.get(p.id) ?? 0}</span>,
+    },
     {
       chave: 'precoVenda',
       titulo: 'Preço Venda',
@@ -691,37 +1019,148 @@ export function Produtos({ usuario, dataSelecionada }: ProdutosProps) {
     },
   ];
 
+  const termoBusca = busca.trim().toLowerCase();
   const produtosFiltrados = produtos.filter((p) => {
-    if (filtroStatus === 'ativos') return p.ativo;
-    if (filtroStatus === 'inativos') return !p.ativo;
+    if (filtroStatus === 'ativos' && !p.ativo) return false;
+    if (filtroStatus === 'inativos' && p.ativo) return false;
+    if (filtroCategoriaNome && p.categoriaNome !== filtroCategoriaNome) return false;
+    if (termoBusca && !`${p.nome} ${p.categoriaNome}`.toLowerCase().includes(termoBusca)) return false;
     return true;
   });
+  const temFiltroProdutos = busca || filtroCategoriaNome || de || ate;
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between gap-4 flex-wrap pb-2 border-b border-borda/40">
-        <div className="flex items-center gap-4 flex-wrap">
-          <h2 className="text-lg font-bold text-claro">Mercadorias & Produtos</h2>
-          <select
-            value={filtroStatus}
-            onChange={(e) => setFiltroStatus(e.target.value as any)}
-            className="rounded border border-borda bg-transparent px-2 py-1 text-xs text-suave focus:ring-ambar focus:border-ambar outline-none"
+      <div className="flex items-center justify-between gap-4 flex-wrap pb-2 border-b border-borda/40 relative">
+        <h2 className="text-lg font-bold text-claro">Mercadorias & Produtos</h2>
+        
+        <div className="flex items-center gap-2">
+          {/* Botão de Filtro (Toggle) */}
+          <button
+            type="button"
+            onClick={() => setFiltrosAbertos(!filtrosAbertos)}
+            className={`p-2 rounded-xl border border-borda transition-all cursor-pointer relative ${
+              filtrosAbertos ? 'bg-claro/10 text-claro' : 'bg-claro/[0.02] text-suave hover:text-claro hover:bg-claro/[0.05]'
+            }`}
+            title="Mostrar/Ocultar Filtros"
           >
-            <option value="ativos" className="bg-ardosia">Apenas Ativos</option>
-            <option value="inativos" className="bg-ardosia">Apenas Inativos</option>
-            <option value="todos" className="bg-ardosia">Todos</option>
-          </select>
+            <IconeFiltro />
+            {(temFiltroProdutos || filtroStatus !== 'ativos') && (
+              <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-positivo animate-pulse" />
+            )}
+          </button>
+
+          {/* Botão de Engrenagem (Ações no Click) */}
+          {podeCadastrar && (
+            <div className="relative" ref={gearRef}>
+              <button
+                type="button"
+                onClick={() => setMenuAberto(!menuAberto)}
+                className={`p-2 rounded-xl border border-borda transition-all cursor-pointer ${
+                  menuAberto ? 'bg-claro/10 text-claro' : 'bg-claro/[0.02] text-suave hover:text-claro hover:bg-claro/[0.05]'
+                }`}
+                title="Outras Ações"
+              >
+                <IconeEngrenagem />
+              </button>
+              
+              {menuAberto && (
+                <div className="absolute right-0 top-full mt-2 z-40 bg-elevado border border-borda rounded-2xl p-3 shadow-2xl w-48 text-left animate-surgir">
+                  <div className="flex flex-col gap-2">
+                    <button
+                      type="button"
+                      onClick={() => { abrirNovo(); setMenuAberto(false); }}
+                      className="w-full btn btn-suave justify-start py-2 text-sm flex items-center gap-2"
+                    >
+                      <IconePlus /> Novo produto
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { abrirCategorias(); setMenuAberto(false); }}
+                      className="w-full btn btn-suave justify-start py-2 text-sm"
+                    >
+                      Categorias
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Botão principal de Adicionar Estoque */}
+          {podeCadastrar && (
+            <button
+              type="button"
+              onClick={abrirNota}
+              className="btn btn-primario px-4 py-2 text-sm flex items-center gap-2"
+            >
+              <IconeEstoque /> Adicionar estoque
+            </button>
+          )}
         </div>
-        {podeCadastrar && (
-          <div className="flex items-center gap-2">
-            <button type="button" onClick={abrirCategorias} className="btn btn-suave px-4 py-2 text-sm">
-              Categorias
-            </button>
-            <button type="button" onClick={abrirNovo} className="btn btn-primario px-4 py-2 text-sm">
-              <IconePlus /> Novo produto
-            </button>
+      </div>
+
+      {/* Filtros em linha (Toggled by filtrosAbertos) */}
+      {filtrosAbertos && (
+        <div className="cartao flex flex-wrap items-end gap-3 p-4 animar-surgir">
+          <div className="min-w-[180px] flex-1">
+            <label className="mb-1 block text-xs font-medium text-suave">Buscar</label>
+            <input
+              className={CLASSE_CAMPO}
+              placeholder="Nome ou categoria…"
+              value={busca}
+              onChange={(e) => setBusca(e.target.value)}
+            />
           </div>
-        )}
+          <div className="min-w-[160px]">
+            <label className="mb-1 block text-xs font-medium text-suave">Categoria</label>
+            <select
+              aria-label="Filtrar por categoria"
+              className={CLASSE_CAMPO}
+              value={filtroCategoriaNome}
+              onChange={(e) => setFiltroCategoriaNome(e.target.value)}
+            >
+              <option value="">Todas</option>
+              {categorias.map((c) => (
+                <option key={c.id} value={c.nome}>{c.nome}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-suave">Status</label>
+            <select
+              value={filtroStatus}
+              onChange={(e) => setFiltroStatus(e.target.value as any)}
+              className={CLASSE_CAMPO}
+            >
+              <option value="ativos">Apenas Ativos</option>
+              <option value="inativos">Apenas Inativos</option>
+              <option value="todos">Todos</option>
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-suave">Saídas de</label>
+            <input aria-label="Saídas de" type="date" className={CLASSE_CAMPO} value={de} onChange={(e) => setDe(e.target.value)} />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-suave">Até</label>
+            <input aria-label="Saídas até" type="date" className={CLASSE_CAMPO} value={ate} onChange={(e) => setAte(e.target.value)} />
+          </div>
+          {temFiltroProdutos && (
+            <button
+              type="button"
+              className="btn btn-suave px-3 py-2 text-sm"
+              onClick={() => { setBusca(''); setFiltroCategoriaNome(''); setDe(''); setAte(''); }}
+            >
+              Limpar
+            </button>
+          )}
+        </div>
+      )}
+
+      <div className="px-1 text-xs text-suave">
+        Coluna <strong className="text-claro">Saídas</strong> = vendido entre{' '}
+        {formatarDataBR(periodoSaidasDe)} e {formatarDataBR(periodoSaidasAte)}.
       </div>
 
       <DataTable
@@ -955,12 +1394,24 @@ export function Produtos({ usuario, dataSelecionada }: ProdutosProps) {
         larguraMax="max-w-2xl"
       >
         <div className="flex flex-col gap-6">
-          <form onSubmit={aoAdicionarEntrada} className="flex flex-col gap-4 rounded-xl border border-borda bg-claro/[0.02] p-4">
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-4 items-end">
+          <form onSubmit={aoSalvarEntrada} className="flex flex-col gap-3 rounded-xl border border-borda bg-claro/[0.02] p-4">
+            <div className="max-w-[200px]">
+              <Campo label="Data da Entrada" obrigatorio>
+                <input
+                  type="date"
+                  aria-label="Data da entrada"
+                  className={CLASSE_CAMPO}
+                  value={entradaData}
+                  onChange={(e) => setEntradaData(e.target.value)}
+                />
+              </Campo>
+            </div>
+            <div className={`grid grid-cols-2 gap-4 items-end ${entradaEditandoId ? 'sm:grid-cols-3' : 'sm:grid-cols-4'}`}>
               <Campo label="Quantidade" obrigatorio>
                 <input
                   type="number"
                   min="1"
+                  step="any"
                   className={`${CLASSE_CAMPO} numeros text-right`}
                   placeholder="Ex.: 50"
                   value={entradaQtdStr}
@@ -975,19 +1426,38 @@ export function Produtos({ usuario, dataSelecionada }: ProdutosProps) {
                   onChange={(e) => setEntradaCustoStr(e.target.value)}
                 />
               </Campo>
-              <Campo label="Data da Entrada" obrigatorio>
-                <input
-                  type="date"
-                  className={CLASSE_CAMPO}
-                  value={entradaData}
-                  onChange={(e) => setEntradaData(e.target.value)}
-                />
-              </Campo>
+              {!entradaEditandoId && (
+                <Campo label="Preço de venda (R$)" dica="Atualiza o preço a partir desta data">
+                  <input
+                    className={CLASSE_CAMPO}
+                    placeholder="Ex.: 5,00"
+                    value={entradaPrecoVendaStr}
+                    onChange={(e) => setEntradaPrecoVendaStr(e.target.value)}
+                  />
+                </Campo>
+              )}
               <div>
                 <button type="submit" disabled={adicionandoEntrada} className="w-full btn btn-primario py-2 text-sm transition-all active:scale-98">
-                  {adicionandoEntrada ? 'Registrando…' : 'Registrar'}
+                  {adicionandoEntrada ? 'Salvando…' : entradaEditandoId ? 'Salvar alteração' : 'Registrar'}
                 </button>
               </div>
+            </div>
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-suave">
+                {entradaEditandoId ? (
+                  <button type="button" onClick={cancelarEdicaoEntrada} className="text-ambar hover:underline">
+                    Cancelar edição
+                  </button>
+                ) : (
+                  'Informe o preço de venda só se ele mudou nesta compra.'
+                )}
+              </span>
+              <span className="text-claro">
+                Total da compra:{' '}
+                <strong className="numeros text-positivo">
+                  {formatReais(asCentavos(BigInt(Math.round((Number(entradaQtdStr) || 0) * Number(parseReais(entradaCustoStr))))))}
+                </strong>
+              </span>
             </div>
           </form>
 
@@ -1002,12 +1472,12 @@ export function Produtos({ usuario, dataSelecionada }: ProdutosProps) {
                 <table className="w-full text-left text-xs table-fixed">
                   <thead className="bg-claro/[0.02] text-suave border-b border-borda sticky top-0 z-10">
                     <tr>
-                      <th className="p-3 w-[25%] font-semibold">Data</th>
-                      <th className="p-3 w-[15%] text-right font-semibold">Qtd</th>
-                      <th className="p-3 w-[20%] text-right font-semibold">Unitário</th>
-                      <th className="p-3 w-[20%] text-right font-semibold">Total</th>
-                      <th className="p-3 w-[15%] text-right font-semibold">Tipo</th>
-                      <th className="p-3 w-[5%] text-right font-semibold"></th>
+                      <th className="p-3 w-[24%] font-semibold">Data</th>
+                      <th className="p-3 w-[12%] text-right font-semibold">Qtd</th>
+                      <th className="p-3 w-[18%] text-right font-semibold">Unitário</th>
+                      <th className="p-3 w-[18%] text-right font-semibold">Total</th>
+                      <th className="p-3 w-[12%] text-right font-semibold">Tipo</th>
+                      <th className="p-3 w-[16%] text-right font-semibold"></th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-borda">
@@ -1032,14 +1502,24 @@ export function Produtos({ usuario, dataSelecionada }: ProdutosProps) {
                           </td>
                           <td className="p-3 text-right">
                             {podeCadastrar && (
-                              <button
-                                type="button"
-                                onClick={() => void aoExcluirEntrada(e)}
-                                className="text-negativo hover:text-negativo/80 p-1"
-                                title="Excluir entrada"
-                              >
-                                <IconeLixeira />
-                              </button>
+                              <div className="flex items-center justify-end gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => aoEditarEntrada(e)}
+                                  className="text-suave hover:text-ambar p-1"
+                                  title="Editar entrada"
+                                >
+                                  <IconeEditar />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void aoExcluirEntrada(e)}
+                                  className="text-negativo hover:text-negativo/80 p-1"
+                                  title="Excluir entrada"
+                                >
+                                  <IconeLixeira />
+                                </button>
+                              </div>
                             )}
                           </td>
                         </tr>
@@ -1053,6 +1533,184 @@ export function Produtos({ usuario, dataSelecionada }: ProdutosProps) {
           <div className="flex justify-end border-t border-borda pt-4">
             <button type="button" className="btn btn-suave px-4 py-2 text-sm" onClick={() => setModalEstoqueAberto(false)}>
               Fechar
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        aberto={modalNotaAberto}
+        aoFechar={() => setModalNotaAberto(false)}
+        titulo={notaModo === 'edicao' ? 'Editar nota de entrada' : 'Adicionar estoque (nota)'}
+        larguraMax="max-w-5xl"
+      >
+        <div className="flex flex-col gap-5">
+          <div className="grid grid-cols-1 gap-5 lg:grid-cols-[45%_55%] lg:items-start">
+            {/* Coluna Esquerda: Barra de Edição + Formulário de Produto */}
+            <div className="flex flex-col gap-5">
+              {/* Barra: nova nota / editar existente + data */}
+              <div className="flex flex-wrap items-end gap-3 rounded-xl border border-borda bg-claro/[0.02] p-3">
+                <div className="min-w-[220px] flex-1">
+                  <label className="mb-1 block text-xs font-medium text-suave">Editar nota existente</label>
+                  <select
+                    aria-label="Editar nota existente"
+                    className={CLASSE_CAMPO}
+                    value={notaModo === 'edicao' ? notaId : ''}
+                    onChange={(e) => void aoEditarNotaExistente(e.target.value)}
+                  >
+                    <option value="">— nova nota —</option>
+                    {notasExistentes.map((n) => (
+                      <option key={n.notaId} value={n.notaId}>
+                        {formatarDataBR(n.data)} · {n.itens} {n.itens === 1 ? 'item' : 'itens'} · {formatReais(n.totalCentavos)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="w-[160px]">
+                  <label className="mb-1 block text-xs font-medium text-suave">Data da nota</label>
+                  <input
+                    type="date"
+                    aria-label="Data da nota"
+                    className={CLASSE_CAMPO}
+                    value={notaData}
+                    onChange={(e) => setNotaData(e.target.value)}
+                  />
+                </div>
+                {notaModo === 'edicao' && (
+                  <button type="button" onClick={novaNota} className="btn btn-suave px-3 py-2 text-sm">
+                    Nova nota
+                  </button>
+                )}
+              </div>
+
+              {/* Editor de produto */}
+              <div className="flex flex-col gap-3 rounded-xl border border-borda bg-claro/[0.02] p-4">
+                <h4 className="text-sm font-bold text-claro">Adicionar produto à nota</h4>
+                <div className="flex flex-col gap-3">
+                  <Campo label="Produto" obrigatorio>
+                    <Combobox
+                      options={produtos.filter((p) => p.ativo).map((p) => ({
+                        id: p.id,
+                        label: p.nome
+                      }))}
+                      value={notaProdutoId}
+                      onChange={(id) => aoSelecionarProdutoNota(id)}
+                      placeholder="Digite para buscar ou selecione..."
+                    />
+                  </Campo>
+
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 sm:items-end">
+                    <Campo label="Qtd" obrigatorio>
+                      <input
+                        type="number"
+                        min="1"
+                        step="any"
+                        className={`${CLASSE_CAMPO} numeros text-right`}
+                        placeholder="0"
+                        value={notaQtd}
+                        onChange={(e) => setNotaQtd(e.target.value)}
+                      />
+                    </Campo>
+                    <Campo label="Custo (R$)" obrigatorio>
+                      <input
+                        className={`${CLASSE_CAMPO} numeros text-right`}
+                        placeholder="0,00"
+                        value={notaCusto}
+                        onChange={(e) => setNotaCusto(e.target.value)}
+                      />
+                    </Campo>
+                    <Campo label="Preço venda (R$)">
+                      <input
+                        className={`${CLASSE_CAMPO} numeros text-right`}
+                        placeholder="0,00"
+                        value={notaPreco}
+                        onChange={(e) => setNotaPreco(e.target.value)}
+                      />
+                    </Campo>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between mt-2">
+                  <span className="text-xs text-suave">
+                    Total da linha:{' '}
+                    <strong className="numeros text-claro">
+                      {formatReais(asCentavos(BigInt(Math.round((Number(notaQtd) || 0) * Number(parseReais(notaCusto))))))}
+                    </strong>
+                  </span>
+                  <button type="button" onClick={adicionarLinhaNota} className="btn btn-primario px-4 py-2 text-sm">
+                    <IconePlus /> Adicionar
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Coluna Direita: Lista da nota (full width, cresce) */}
+            <div className="flex flex-col gap-2 h-full">
+            <h4 className="text-sm font-bold text-claro">Itens da nota</h4>
+            {notaLinhas.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-borda py-8 text-center text-xs text-suave">
+                Nenhum item ainda. Use o formulário para adicionar produtos.
+              </div>
+            ) : (
+              <div className="overflow-y-auto rounded-xl border border-borda max-h-72">
+                <table className="w-full text-left text-xs table-fixed">
+                  <thead className="bg-ardosia text-suave border-b border-borda sticky top-0 z-10">
+                    <tr>
+                      <th className="p-2 w-[40%] font-semibold">Produto</th>
+                      <th className="p-2 w-[14%] text-right font-semibold">Qtd</th>
+                      <th className="p-2 w-[20%] text-right font-semibold">Custo</th>
+                      <th className="p-2 w-[20%] text-right font-semibold">Total</th>
+                      <th className="p-2 w-[6%]"></th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-borda">
+                    {notaLinhas.map((l, i) => (
+                      <tr key={l.entradaId ?? `${l.produtoId}-${i}`} className="hover:bg-claro/[0.01]">
+                        <td className="p-2 font-medium text-claro truncate">{l.nome}</td>
+                        <td className="p-2 numeros text-right text-claro">{l.quantidade}</td>
+                        <td className="p-2 numeros text-right text-claro">{formatReais(l.custo)}</td>
+                        <td className="p-2 numeros text-right font-semibold text-positivo">
+                          {formatReais(asCentavos(BigInt(Math.round(l.quantidade * Number(l.custo)))))}
+                        </td>
+                        <td className="p-2 text-right">
+                          <button
+                            type="button"
+                            onClick={() => removerLinhaNota(i)}
+                            className="text-negativo hover:text-negativo/80 p-1"
+                            title="Remover item"
+                          >
+                            <IconeLixeira />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <div className="flex items-center justify-between rounded-xl border border-positivo/40 bg-positivo/[0.06] px-4 py-2">
+              <span className="text-sm font-semibold text-positivo">Total da nota</span>
+              <span className="numeros text-lg font-extrabold text-positivo">
+                {formatReais(
+                  asCentavos(
+                    notaLinhas.reduce((acc, l) => acc + BigInt(Math.round(l.quantidade * Number(l.custo))), 0n),
+                  ),
+                )}
+              </span>
+            </div>
+          </div>
+          </div>
+
+          <div className="flex justify-end gap-2 border-t border-borda pt-4">
+            <button type="button" className="btn btn-suave px-4 py-2 text-sm" onClick={() => setModalNotaAberto(false)}>
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={() => void salvarNota()}
+              disabled={salvandoNota || notaLinhas.length === 0}
+              className="btn btn-primario px-4 py-2 text-sm"
+            >
+              {salvandoNota ? 'Salvando…' : notaModo === 'edicao' ? 'Salvar alterações' : 'Salvar nota'}
             </button>
           </div>
         </div>
@@ -1518,6 +2176,23 @@ function IconeLixeira() {
   return (
     <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+    </svg>
+  );
+}
+
+function IconeEngrenagem() {
+  return (
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+    </svg>
+  );
+}
+
+function IconeFiltro() {
+  return (
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 3c2.755 0 5.455.477 8 1.4V7a1 1 0 01-.293.707L14.414 13a1 1 0 00-.293.707v5.586a1 1 0 01-.293.707l-3.414 3.414A1 1 0 019 22.586V13.707a1 1 0 00-.293-.707L3.293 7.707A1 1 0 013 7V4.4C5.545 3.477 8.245 3 12 3z" />
     </svg>
   );
 }

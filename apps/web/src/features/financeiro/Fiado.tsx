@@ -32,7 +32,11 @@ export function Fiado({ usuarioId }: { usuarioId: string }) {
   const [contas, setContas] = useState<ContaCompleta[]>([]);
   const [clientes, setClientes] = useState<ClienteFiado[]>([]);
   const [carregando, setCarregando] = useState(true);
-  const [busca, setBusca] = useState('');
+  const [busca, setBusca] = useState(() => localStorage.getItem('pontao_filtro_fiado_busca') ?? '');
+
+  useEffect(() => {
+    localStorage.setItem('pontao_filtro_fiado_busca', busca);
+  }, [busca]);
 
   // Modal cliente
   const [clienteAberto, setClienteAberto] = useState(false);

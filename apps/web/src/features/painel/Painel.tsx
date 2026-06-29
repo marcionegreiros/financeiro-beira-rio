@@ -19,6 +19,8 @@ import {
   listarFechamentos,
   obterMovimentosFechamento,
   obterFiadosFechamento,
+  obterLucroHistorico,
+  type LucroDia,
   type TanquePainel,
   type AlertasDashboard,
   type ResumoFechamentoCompleto,
@@ -65,6 +67,7 @@ interface Dados {
   capitalHistorico: CapitalHistorico[];
   saldosContas: SaldoConta[];
   fechamentosRecentes: FechamentoResumo[];
+  lucrosHistorico: LucroDia[];
 }
 
 const PALETA_CORES = [
@@ -185,8 +188,9 @@ export function Painel({ usuario }: { usuario: UsuarioAtual }) {
       obterVendasHistorico(hoje, 90),
       listarSaldos(),
       listarFechamentos(5),
+      obterLucroHistorico(hoje, 90),
     ])
-      .then(async ([tanques, capital, vendas, alertas, ultimoFechamento, despesasCategoria, vendasHistorico, saldosContas, fechamentosRecentes]) => {
+      .then(async ([tanques, capital, vendas, alertas, ultimoFechamento, despesasCategoria, vendasHistorico, saldosContas, fechamentosRecentes, lucrosHistorico]) => {
         if (!ativo) return;
         const capitalHistorico = await obterHistoricoCapital(hoje, capital, 15);
         setDados({
@@ -200,6 +204,7 @@ export function Painel({ usuario }: { usuario: UsuarioAtual }) {
           capitalHistorico,
           saldosContas,
           fechamentosRecentes,
+          lucrosHistorico,
         });
       })
       .catch((e: unknown) => {
@@ -238,6 +243,39 @@ export function Painel({ usuario }: { usuario: UsuarioAtual }) {
 
   const totalVendasFiltradas = useMemo(() => vendasFiltradas.reduce((acc, curr) => acc + curr.valor, 0), [vendasFiltradas]);
   const mediaDiariaFiltrada = useMemo(() => totalVendasFiltradas / (vendasFiltradas.length || 1), [totalVendasFiltradas, vendasFiltradas]);
+
+  // Lucros filtrados por período (lista plana, ideal para cálculos do card)
+  const lucrosFiltradosPlano = useMemo(() => {
+    if (!dados || !dados.lucrosHistorico) return [];
+    let list = [...dados.lucrosHistorico];
+    
+    if (periodoFiltro === '7d') {
+      list = list.slice(-7);
+    } else if (periodoFiltro === '30d') {
+      list = list.slice(-30);
+    } else if (periodoFiltro === 'mes') {
+      const inicioMes = hoje.slice(0, 8) + '01';
+      list = list.filter((item) => item.data >= inicioMes && item.data <= hoje);
+    } else if (periodoFiltro === '90d') {
+      list = list.slice(-90);
+    }
+    return list;
+  }, [dados, periodoFiltro, hoje]);
+
+  const totalFaturamentoFiltrado = useMemo(() => lucrosFiltradosPlano.reduce((acc, curr) => acc + curr.faturamento, 0), [lucrosFiltradosPlano]);
+  const totalLucroBrutoFiltrado = useMemo(() => lucrosFiltradosPlano.reduce((acc, curr) => acc + curr.lucroBruto, 0), [lucrosFiltradosPlano]);
+  const totalLucroLiquidoFiltrado = useMemo(() => lucrosFiltradosPlano.reduce((acc, curr) => acc + curr.lucroLiquido, 0), [lucrosFiltradosPlano]);
+  const mediaLucroDiarioFiltrado = useMemo(() => totalLucroLiquidoFiltrado / (lucrosFiltradosPlano.length || 1), [totalLucroLiquidoFiltrado, lucrosFiltradosPlano]);
+
+  const margemBrutaFiltrada = useMemo(() => {
+    if (totalFaturamentoFiltrado <= 0) return 0;
+    return (totalLucroBrutoFiltrado / totalFaturamentoFiltrado) * 100;
+  }, [totalLucroBrutoFiltrado, totalFaturamentoFiltrado]);
+
+  const margemLiquidaFiltrada = useMemo(() => {
+    if (totalFaturamentoFiltrado <= 0) return 0;
+    return (totalLucroLiquidoFiltrado / totalFaturamentoFiltrado) * 100;
+  }, [totalLucroLiquidoFiltrado, totalFaturamentoFiltrado]);
 
   return (
     <div className="flex flex-col gap-6 w-full">
@@ -585,7 +623,7 @@ export function Painel({ usuario }: { usuario: UsuarioAtual }) {
               )}
 
               {/* KPIs Simétricos (Faturamento do Mês e Volume Físico do Mês) */}
-              <section className="grid gap-6 sm:grid-cols-2">
+              <section className={`grid gap-6 ${podeVerCapital ? 'sm:grid-cols-3' : 'sm:grid-cols-2'}`}>
                 {/* Card 1: Faturamento do Mês */}
                 <div className="cartao relative overflow-hidden p-6 hover:border-[color-mix(in_srgb,var(--color-ambar)_20%,transparent)] transition-all duration-300 flex flex-col justify-between min-h-[220px]">
                   <div>
@@ -696,6 +734,78 @@ export function Painel({ usuario }: { usuario: UsuarioAtual }) {
                     </div>
                   </div>
                 </div>
+
+                {/* Card 3: Lucro do Período */}
+                {podeVerCapital && (
+                  <div className="cartao relative overflow-hidden p-6 hover:border-[color-mix(in_srgb,var(--color-ambar)_20%,transparent)] transition-all duration-300 flex flex-col justify-between min-h-[220px]">
+                    <div>
+                      <div className="flex items-center justify-between border-b border-borda/40 pb-3 mb-4">
+                        <div>
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-suave">
+                            Resultado no Filtro ({periodoFiltro === '7d' ? '7 dias' : periodoFiltro === '30d' ? '30 dias' : periodoFiltro === '90d' ? '90 dias' : 'Mês atual'})
+                          </span>
+                          <h3 className="font-display text-base font-bold text-claro mt-0.5">Lucro Operacional</h3>
+                        </div>
+                        <span className={`flex h-8 w-8 items-center justify-center rounded-lg shadow-sm ${
+                          totalLucroLiquidoFiltrado >= 0
+                            ? 'bg-positivo/10 text-positivo shadow-positivo/5'
+                            : 'bg-negativo/10 text-negativo shadow-negativo/5'
+                        }`}>
+                          <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 002 2h2a2 2 0 002-2z" />
+                          </svg>
+                        </span>
+                      </div>
+
+                      <div className="space-y-3">
+                        {/* Lucro Bruto */}
+                        <div>
+                          <div className="flex justify-between items-baseline">
+                            <span className="text-[10px] font-semibold text-suave uppercase">Lucro Bruto</span>
+                            <span className="text-[10px] font-bold text-claro/70">{margemBrutaFiltrada.toFixed(1)}% margem</span>
+                          </div>
+                          <p className={`numeros text-lg font-bold tracking-tight ${
+                            totalLucroBrutoFiltrado >= 0 ? 'text-claro' : 'text-negativo'
+                          }`}>
+                            {totalLucroBrutoFiltrado >= 0 ? '' : '-'}{formatReais(asCentavos(BigInt(Math.abs(Math.round(totalLucroBrutoFiltrado * 100)))))}
+                          </p>
+                        </div>
+
+                        {/* Lucro Líquido */}
+                        <div>
+                          <div className="flex justify-between items-baseline">
+                            <span className="text-[10px] font-semibold text-suave uppercase">Lucro Líquido</span>
+                            <span className={`text-[10px] font-bold ${totalLucroLiquidoFiltrado >= 0 ? 'text-positivo/80' : 'text-negativo/80'}`}>
+                              {margemLiquidaFiltrada.toFixed(1)}% margem
+                            </span>
+                          </div>
+                          <p className={`numeros text-2xl font-black tracking-tight ${
+                            totalLucroLiquidoFiltrado >= 0 ? 'text-positivo' : 'text-negativo'
+                          }`}>
+                            {totalLucroLiquidoFiltrado >= 0 ? '' : '-'}{formatReais(asCentavos(BigInt(Math.abs(Math.round(totalLucroLiquidoFiltrado * 100)))))}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 pt-4 border-t border-borda/30 flex justify-between items-center text-xs">
+                      <div>
+                        <span className="text-suave font-medium">Média Líquida Diária</span>
+                        <p className={`numeros font-bold ${
+                          mediaLucroDiarioFiltrado >= 0 ? 'text-positivo/80' : 'text-negativo/80'
+                        }`}>
+                          {mediaLucroDiarioFiltrado >= 0 ? '' : '-'}{formatReais(asCentavos(BigInt(Math.abs(Math.round(mediaLucroDiarioFiltrado * 100)))))}
+                        </p>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-suave">Dias Apurados</span>
+                        <p className="numeros font-bold text-claro/80">
+                          {lucrosFiltradosPlano.length}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </section>
 
               {/* Gráfico de Vendas */}

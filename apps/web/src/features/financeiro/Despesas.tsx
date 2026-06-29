@@ -27,10 +27,26 @@ export function Despesas({ usuario }: { usuario: UsuarioAtual }) {
   const [carregando, setCarregando] = useState(true);
 
   // Filtros
-  const [busca, setBusca] = useState('');
-  const [filtroCategoria, setFiltroCategoria] = useState('');
-  const [de, setDe] = useState('');
-  const [ate, setAte] = useState('');
+  const [busca, setBusca] = useState(() => localStorage.getItem('pontao_filtro_despesas_busca') ?? '');
+  const [filtroCategoria, setFiltroCategoria] = useState(() => localStorage.getItem('pontao_filtro_despesas_categoria') ?? '');
+  const [de, setDe] = useState(() => localStorage.getItem('pontao_filtro_despesas_de') ?? '');
+  const [ate, setAte] = useState(() => localStorage.getItem('pontao_filtro_despesas_ate') ?? '');
+
+  useEffect(() => {
+    localStorage.setItem('pontao_filtro_despesas_busca', busca);
+  }, [busca]);
+
+  useEffect(() => {
+    localStorage.setItem('pontao_filtro_despesas_categoria', filtroCategoria);
+  }, [filtroCategoria]);
+
+  useEffect(() => {
+    localStorage.setItem('pontao_filtro_despesas_de', de);
+  }, [de]);
+
+  useEffect(() => {
+    localStorage.setItem('pontao_filtro_despesas_ate', ate);
+  }, [ate]);
 
   // Modal Lançar/Editar
   const [aberto, setAberto] = useState(false);
@@ -41,7 +57,7 @@ export function Despesas({ usuario }: { usuario: UsuarioAtual }) {
   const [idExcluirConfirmado, setIdExcluirConfirmado] = useState<string | null>(null);
 
   async function recarregar() {
-    setMovimentos(await listarMovimentos(['despesa']));
+    setMovimentos(await listarMovimentos(['despesa', 'taxa_cartao']));
   }
 
   useEffect(() => {
@@ -50,7 +66,7 @@ export function Despesas({ usuario }: { usuario: UsuarioAtual }) {
       try {
         const [cat, movs] = await Promise.all([
           listarCategoriasDespesa(),
-          listarMovimentos(['despesa']),
+          listarMovimentos(['despesa', 'taxa_cartao']),
         ]);
         if (!ativo) return;
         setCategorias(cat.filter((x) => x.nome.toLowerCase() !== 'perda'));
@@ -150,7 +166,7 @@ export function Despesas({ usuario }: { usuario: UsuarioAtual }) {
       titulo: 'Categoria',
       render: (m) => (
         <span className="inline-flex rounded-full bg-claro/[0.06] px-2 py-0.5 text-xs font-medium text-claro">
-          {m.categoriaNome ?? '—'}
+          {m.tipo === 'taxa_cartao' ? 'Taxa de cartão' : m.categoriaNome ?? '—'}
         </span>
       ),
     },
@@ -180,6 +196,27 @@ export function Despesas({ usuario }: { usuario: UsuarioAtual }) {
       titulo: 'Ações',
       alinhar: 'right',
       render: (m) => {
+        // Lançamentos DERIVADOS (Pilar 1) não se editam nem excluem à mão:
+        // - Taxa de cartão: gerada pelo fechamento do caixa.
+        // - Tarifa de PIX: presa ao pagamento via PIX (origemMovimentoId); some
+        //   junto quando o pagamento de origem é excluído.
+        if (m.tipo === 'taxa_cartao' || m.origemMovimentoId) {
+          const dica =
+            m.tipo === 'taxa_cartao'
+              ? 'Gerada automaticamente pelo fechamento do caixa (não editável)'
+              : 'Tarifa de PIX gerada automaticamente pelo pagamento (não editável)';
+          return (
+            <div className="flex justify-end">
+              <span
+                className="inline-flex items-center gap-1 text-xs text-suave"
+                title={dica}
+              >
+                <IconeLock className="h-3.5 w-3.5 text-suave" />
+                Automática
+              </span>
+            </div>
+          );
+        }
         const isFechado = m.fechamentoStatus === 'travado';
         return (
           <div className="flex justify-end gap-2">
@@ -286,6 +323,17 @@ export function Despesas({ usuario }: { usuario: UsuarioAtual }) {
         chaveLinha={(m) => m.id}
         carregando={carregando}
         vazio={temFiltro ? 'Nenhuma despesa nesse filtro.' : 'Nenhuma despesa lançada ainda.'}
+        rodape={
+          <tr className="border-t-2 border-borda bg-claro/[0.02] font-semibold text-sm">
+            <td colSpan={5} className="px-4 py-3 text-right text-suave">
+              Total Filtrado:
+            </td>
+            <td className="px-4 py-3 text-right numeros text-negativo font-bold whitespace-nowrap">
+              {formatReais(total ?? ZERO)}
+            </td>
+            <td className="px-4 py-3"></td>
+          </tr>
+        }
       />
 
       <NovaDespesaModal

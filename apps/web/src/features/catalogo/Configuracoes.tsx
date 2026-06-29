@@ -6,12 +6,15 @@ import {
   salvarCategoriaDespesa,
   removerCategoriaDespesa,
   type CategoriaDespesa,
+  salvarVigenciaTaxaCartao,
+  taxaCartaoVigenteEmData,
 } from '../../data/repositorios';
 import { uuidv7 } from '../../lib/uuidv7';
 import { useToast } from '../../components/ui/Toast';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { Campo, CLASSE_CAMPO } from '../../components/ui/Campo';
 import type { Tema } from '../Shell';
+import { hojeManaus } from '../../lib/datas';
 
 interface Props {
   tema: Tema;
@@ -70,6 +73,9 @@ export function Configuracoes({ tema, aoTrocarTema }: Props) {
   const [taxaDebitoFixa, setTaxaDebitoFixa] = useState('');
   const [taxaCreditoPct, setTaxaCreditoPct] = useState('');
   const [taxaCreditoFixa, setTaxaCreditoFixa] = useState('');
+  const [taxaPixPct, setTaxaPixPct] = useState('');
+  const [taxaPixFixa, setTaxaPixFixa] = useState('');
+  const [taxaVigenteEm, setTaxaVigenteEm] = useState(() => hojeManaus());
   const [mostrarAvulsos, setMostrarAvulsos] = useState(false);
   const [carregando, setCarregando] = useState(true);
   const [salvando, setSalvando] = useState(false);
@@ -135,20 +141,23 @@ export function Configuracoes({ tema, aoTrocarTema }: Props) {
   useEffect(() => {
     async function carregar() {
       try {
-        const [troco, debPct, debFixa, credPct, credFixa, avulsos] = await Promise.all([
+        const [troco, avulsos, taxas] = await Promise.all([
           lerConfig('troco_fixo_centavos'),
-          lerConfig('taxa_cartao_debito_pct'),
-          lerConfig('taxa_cartao_debito_fixa_centavos'),
-          lerConfig('taxa_cartao_credito_pct'),
-          lerConfig('taxa_cartao_credito_fixa_centavos'),
           lerConfig('fechamento_mostrar_avulsos'),
+          taxaCartaoVigenteEmData(),
         ]);
         if (troco !== null) setTrocoFixo(String(Number(troco) / 100));
-        if (debPct !== null) setTaxaDebitoPct(String(debPct));
-        if (debFixa !== null) setTaxaDebitoFixa(String(Number(debFixa) / 100));
-        if (credPct !== null) setTaxaCreditoPct(String(credPct));
-        if (credFixa !== null) setTaxaCreditoFixa(String(Number(credFixa) / 100));
         if (avulsos !== null) setMostrarAvulsos(Boolean(avulsos));
+
+        if (taxas) {
+          setTaxaDebitoPct(String(taxas.debito.percentualBp / 100));
+          setTaxaDebitoFixa(String(taxas.debito.fixaCentavos / 100));
+          setTaxaCreditoPct(String(taxas.credito.percentualBp / 100));
+          setTaxaCreditoFixa(String(taxas.credito.fixaCentavos / 100));
+          setTaxaPixPct(String(taxas.pix.percentualBp / 100));
+          setTaxaPixFixa(String(taxas.pix.fixaCentavos / 100));
+        }
+
         setCategoriasDespesa(await listarCategoriasDespesa());
       } catch (err) {
         console.error('Erro ao carregar configs', err);
@@ -165,13 +174,22 @@ export function Configuracoes({ tema, aoTrocarTema }: Props) {
     e.preventDefault();
     setSalvando(true);
     try {
+      const pctDebito = Number(taxaDebitoPct || 0);
+      const fixaDebito = Math.round(Number(taxaDebitoFixa || 0) * 100);
+      const pctCredito = Number(taxaCreditoPct || 0);
+      const fixaCredito = Math.round(Number(taxaCreditoFixa || 0) * 100);
+      const pctPix = Number(taxaPixPct || 0);
+      const fixaPix = Math.round(Number(taxaPixFixa || 0) * 100);
+
       await Promise.all([
         salvarConfig('troco_fixo_centavos', Math.round(Number(trocoFixo || 0) * 100)),
-        salvarConfig('taxa_cartao_debito_pct', Number(taxaDebitoPct || 0)),
-        salvarConfig('taxa_cartao_debito_fixa_centavos', Math.round(Number(taxaDebitoFixa || 0) * 100)),
-        salvarConfig('taxa_cartao_credito_pct', Number(taxaCreditoPct || 0)),
-        salvarConfig('taxa_cartao_credito_fixa_centavos', Math.round(Number(taxaCreditoFixa || 0) * 100)),
         salvarConfig('fechamento_mostrar_avulsos', mostrarAvulsos),
+        salvarVigenciaTaxaCartao({
+          data: taxaVigenteEm,
+          debito: { percentualBp: Math.round(pctDebito * 100), fixaCentavos: fixaDebito },
+          credito: { percentualBp: Math.round(pctCredito * 100), fixaCentavos: fixaCredito },
+          pix: { percentualBp: Math.round(pctPix * 100), fixaCentavos: fixaPix },
+        }),
       ]);
       toast.sucesso('Configurações salvas com sucesso.');
     } catch (err) {
@@ -236,14 +254,26 @@ export function Configuracoes({ tema, aoTrocarTema }: Props) {
         <section className="cartao p-5">
           <h2 className="mb-4 flex items-center gap-2 text-base font-bold text-claro">
             <IconeCartao />
-            Taxas de Cartão
+            Taxas de Cartão e Pix (Maquininha)
           </h2>
           <p className="mb-4 text-sm text-suave">
             Configuração das taxas cobradas pela operadora. Essas taxas são aplicadas automaticamente
-            ao receber pagamento em cartão, gerando uma despesa de &quot;taxa de cartão&quot;.
+            ao receber pagamentos eletrônicos, gerando despesas de taxa correspondentes.
           </p>
 
-          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
+          <div className="mb-6 max-w-xs">
+            <Campo label="Vigência das novas taxas" dica="A partir de qual data estas taxas passam a valer.">
+              <input
+                type="date"
+                className={CLASSE_CAMPO}
+                value={taxaVigenteEm}
+                onChange={(e) => setTaxaVigenteEm(e.target.value)}
+                required
+              />
+            </Campo>
+          </div>
+
+          <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
             {/* Débito */}
             <div className="flex flex-col gap-3 rounded-xl border border-borda p-4">
               <h3 className="text-sm font-semibold text-claro">Cartão de Débito</h3>
@@ -298,6 +328,35 @@ export function Configuracoes({ tema, aoTrocarTema }: Props) {
                   placeholder="0,00"
                   value={taxaCreditoFixa}
                   onChange={(e) => setTaxaCreditoFixa(e.target.value)}
+                />
+              </Campo>
+            </div>
+
+            {/* Pix */}
+            <div className="flex flex-col gap-3 rounded-xl border border-borda p-4">
+              <h3 className="text-sm font-semibold text-claro">PIX (Maquininha)</h3>
+              <Campo label="Taxa percentual (%)" dica="Ex.: 0.99 para 0,99%">
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  inputMode="decimal"
+                  className={`${CLASSE_CAMPO} numeros text-right`}
+                  placeholder="0,00"
+                  value={taxaPixPct}
+                  onChange={(e) => setTaxaPixPct(e.target.value)}
+                />
+              </Campo>
+              <Campo label="Taxa fixa por operação (R$)" dica="Valor fixo descontado por transação">
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  inputMode="decimal"
+                  className={`${CLASSE_CAMPO} numeros text-right`}
+                  placeholder="0,00"
+                  value={taxaPixFixa}
+                  onChange={(e) => setTaxaPixFixa(e.target.value)}
                 />
               </Campo>
             </div>

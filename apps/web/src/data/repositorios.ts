@@ -9,11 +9,13 @@ import { supabase } from './supabase';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { paraCentavos, litrosParaMililitros, centavosParaNumero, quantidadeParaNumero } from './conversao';
 import { precoVigenteEm, custoVigenteEm, type RegistroVigencia } from '../domain/precos';
+import { taxaCartaoVigenteEm, type RegistroTaxa } from '../domain/taxaCartao';
+import { taxaPixVigenteEm, tarifaPix, type RegistroTaxaPix } from '../domain/taxaPixConta';
 import { capitalTotal, capitalOperacional } from '../domain/capital';
 import { nivelCalculado } from '../domain/tanque';
 import { hojeManaus, limitesDoDiaManaus } from '../lib/datas';
 import { uuidv7 } from '../lib/uuidv7';
-import { somar, asCentavos, type Centavos } from '../lib/money';
+import { somar, asCentavos, formatReais, type Centavos } from '../lib/money';
 import { asMililitros, type Mililitros, type Quantidade } from '../domain/tipos';
 
 export interface SaldoConta {
@@ -375,6 +377,252 @@ export async function salvarConfig(chave: string, valorJson: unknown): Promise<v
   if (error) throw error;
 }
 
+// ---- Taxa de cartão (histórico por vigência §3.6 + §5.6) ----------------------
+
+export interface TaxaCartaoConfig {
+  /** percentual em basis points (3% = 300). */
+  percentualBp: number;
+  fixaCentavos: number;
+}
+
+export interface TaxasCartaoVigentes {
+  debito: TaxaCartaoConfig;
+  credito: TaxaCartaoConfig;
+  /** PIX via maquininha (PIX direto na chave do banco é grátis). */
+  pix: TaxaCartaoConfig;
+}
+
+interface TaxaCartaoRow {
+  forma: string;
+  percentual_bp: number;
+  fixa_centavos: number;
+  valido_a_partir_de: string;
+}
+
+function agruparTaxasPorForma(rows: TaxaCartaoRow[]): Map<string, RegistroTaxa[]> {
+  const porForma = new Map<string, RegistroTaxa[]>();
+  for (const t of rows) {
+    const lista = porForma.get(t.forma) ?? [];
+    lista.push({
+      percentualBp: BigInt(t.percentual_bp),
+      fixa: asCentavos(BigInt(t.fixa_centavos)),
+      validoApartirDe: t.valido_a_partir_de,
+    });
+    porForma.set(t.forma, lista);
+  }
+  return porForma;
+}
+
+/** Taxa de cartão vigente numa data (default: hoje, Manaus), resolvida do histórico. */
+export async function taxaCartaoVigenteEmData(data?: string): Promise<TaxasCartaoVigentes> {
+  const ref = data ?? hojeManaus();
+  const { data: rows, error } = await supabase
+    .from('taxa_cartao')
+    .select('forma,percentual_bp,fixa_centavos,valido_a_partir_de');
+  if (error) throw error;
+  const porForma = agruparTaxasPorForma((rows ?? []) as TaxaCartaoRow[]);
+  const deb = taxaCartaoVigenteEm(porForma.get('debito') ?? [], ref);
+  const cred = taxaCartaoVigenteEm(porForma.get('credito') ?? [], ref);
+  const pix = taxaCartaoVigenteEm(porForma.get('pix') ?? [], ref);
+  return {
+    debito: { percentualBp: Number(deb.percentualBp), fixaCentavos: Number(deb.fixa) },
+    credito: { percentualBp: Number(cred.percentualBp), fixaCentavos: Number(cred.fixa) },
+    pix: { percentualBp: Number(pix.percentualBp), fixaCentavos: Number(pix.fixa) },
+  };
+}
+
+/**
+ * Insere uma nova vigência de taxa (débito + crédito) a partir de `data`
+ * (YYYY-MM-DD). NÃO sobrescreve o histórico — adiciona um registro novo, igual a
+ * preço/custo. Escrita gated por `editar_configuracoes` (RLS).
+ */
+export async function salvarVigenciaTaxaCartao(args: {
+  data: string;
+  debito: TaxaCartaoConfig;
+  credito: TaxaCartaoConfig;
+  pix: TaxaCartaoConfig;
+}): Promise<void> {
+  const linha = (forma: string, t: TaxaCartaoConfig) => ({
+    id: uuidv7(),
+    forma,
+    percentual_bp: t.percentualBp,
+    fixa_centavos: t.fixaCentavos,
+    valido_a_partir_de: args.data,
+  });
+  const linhas = [
+    linha('debito', args.debito),
+    linha('credito', args.credito),
+    linha('pix', args.pix),
+  ];
+  const { error } = await supabase.from('taxa_cartao').insert(linhas);
+  if (error) throw error;
+}
+
+// ---- Tarifa de PIX por conta de banco (histórico por vigência) ----------------
+
+export interface TaxaPixContaConfig {
+  /** percentual em basis points (1,45% = 145). */
+  percentualBp: number;
+  /** tarifa mínima por transação, em centavos (0 = sem mínimo). */
+  minimoCentavos: number;
+  /** tarifa máxima por transação, em centavos (0 = sem máximo). */
+  maximoCentavos: number;
+}
+
+interface TaxaPixContaRow {
+  conta_id: string;
+  percentual_bp: number;
+  minimo_centavos: number;
+  maximo_centavos: number;
+  valido_a_partir_de: string;
+}
+
+/**
+ * Tarifa de PIX vigente numa data (default: hoje, Manaus) para CADA conta de banco,
+ * resolvida do histórico. Retorna Map<contaId, regra vigente>. Contas sem nenhuma
+ * vigência ficam fora do mapa (tratar como tarifa zero na borda).
+ */
+export async function taxasPixContaVigentesEmData(
+  data?: string,
+): Promise<Map<string, TaxaPixContaConfig>> {
+  const ref = data ?? hojeManaus();
+  const { data: rows, error } = await supabase
+    .from('taxa_pix_conta')
+    .select('conta_id,percentual_bp,minimo_centavos,maximo_centavos,valido_a_partir_de');
+  if (error) throw error;
+
+  const porConta = new Map<string, RegistroTaxaPix[]>();
+  for (const t of (rows ?? []) as TaxaPixContaRow[]) {
+    const lista = porConta.get(t.conta_id) ?? [];
+    lista.push({
+      percentualBp: BigInt(t.percentual_bp),
+      minimo: asCentavos(BigInt(t.minimo_centavos)),
+      maximo: asCentavos(BigInt(t.maximo_centavos)),
+      validoApartirDe: t.valido_a_partir_de,
+    });
+    porConta.set(t.conta_id, lista);
+  }
+
+  const resultado = new Map<string, TaxaPixContaConfig>();
+  for (const [contaId, historico] of porConta) {
+    const v = taxaPixVigenteEm(historico, ref);
+    resultado.set(contaId, {
+      percentualBp: Number(v.percentualBp),
+      minimoCentavos: Number(v.minimo),
+      maximoCentavos: Number(v.maximo),
+    });
+  }
+  return resultado;
+}
+
+export interface VigenciaTaxaPixConta {
+  id: string;
+  contaId: string;
+  percentualBp: number;
+  minimoCentavos: number;
+  maximoCentavos: number;
+  validoAPartirDe: string;
+}
+
+/** Histórico de tarifas de PIX de uma conta, mais recentes primeiro. */
+export async function listarVigenciasTaxaPixConta(contaId: string): Promise<VigenciaTaxaPixConta[]> {
+  const { data, error } = await supabase
+    .from('taxa_pix_conta')
+    .select('id,conta_id,percentual_bp,minimo_centavos,maximo_centavos,valido_a_partir_de')
+    .eq('conta_id', contaId)
+    .order('valido_a_partir_de', { ascending: false });
+  if (error) throw error;
+  return ((data ?? []) as Array<{ id: string } & TaxaPixContaRow>).map((r) => ({
+    id: r.id,
+    contaId: r.conta_id,
+    percentualBp: Number(r.percentual_bp),
+    minimoCentavos: Number(r.minimo_centavos),
+    maximoCentavos: Number(r.maximo_centavos),
+    validoAPartirDe: r.valido_a_partir_de,
+  }));
+}
+
+/**
+ * Insere uma nova vigência de tarifa de PIX para uma conta a partir de `data`
+ * (YYYY-MM-DD). NÃO sobrescreve o histórico — adiciona um registro novo, igual a
+ * preço/custo. Escrita gated por `gerenciar_contas` (RLS).
+ */
+export async function salvarVigenciaTaxaPixConta(args: {
+  contaId: string;
+  data: string;
+  taxa: TaxaPixContaConfig;
+}): Promise<void> {
+  const { error } = await supabase.from('taxa_pix_conta').insert({
+    id: uuidv7(),
+    conta_id: args.contaId,
+    percentual_bp: args.taxa.percentualBp,
+    minimo_centavos: args.taxa.minimoCentavos,
+    maximo_centavos: args.taxa.maximoCentavos,
+    valido_a_partir_de: args.data,
+  });
+  if (error) throw error;
+}
+
+export interface ResumoEntradasBanco {
+  /** PIX que entrou no banco (sem taxa). */
+  pix: Centavos;
+  /** Débito LÍQUIDO que entrou no banco (já sem a taxa). */
+  debito: Centavos;
+  /** Crédito LÍQUIDO que entrou no banco (já sem a taxa). */
+  credito: Centavos;
+  /** Desconto do banco (taxa de cartão), magnitude positiva. */
+  taxa: Centavos;
+  /** Total que realmente entrou no banco (pix + débito + crédito líquidos). */
+  totalLiquido: Centavos;
+}
+
+/**
+ * Soma, por canal, quanto de PIX / débito / crédito entrou no BANCO no período, e
+ * o desconto do banco (taxa de cartão) separado — para o painel de Transferências.
+ * Reforça o Pilar 2: isso é dinheiro do banco, não da gaveta. Intervalo por data de
+ * Manaus (inclusivo nas duas pontas).
+ */
+export async function resumoEntradasBanco(de: string, ate: string): Promise<ResumoEntradasBanco> {
+  const { data: rows, error } = await supabase
+    .from('movimento')
+    .select('tipo,forma_pagamento,valor_centavos,conta:conta_id(tipo)')
+    .in('tipo', ['recebimento_venda', 'taxa_cartao'])
+    .gte('data_hora', limitesDoDiaManaus(de).inicio)
+    .lt('data_hora', limitesDoDiaManaus(ate).fim);
+  if (error) throw error;
+
+  const linhas = (rows ?? []) as unknown as Array<{
+    tipo: string;
+    forma_pagamento: string | null;
+    valor_centavos: number;
+    conta: { tipo: string } | { tipo: string }[] | null;
+  }>;
+
+  let pix = 0n;
+  let debito = 0n;
+  let credito = 0n;
+  let taxa = 0n;
+  for (const m of linhas) {
+    const conta = Array.isArray(m.conta) ? m.conta[0] : m.conta;
+    if (m.tipo === 'recebimento_venda' && conta?.tipo === 'banco') {
+      if (m.forma_pagamento === 'pix') pix += BigInt(m.valor_centavos);
+      else if (m.forma_pagamento === 'debito') debito += BigInt(m.valor_centavos);
+      else if (m.forma_pagamento === 'credito') credito += BigInt(m.valor_centavos);
+    } else if (m.tipo === 'taxa_cartao') {
+      const v = BigInt(m.valor_centavos);
+      taxa += v < 0n ? -v : v;
+    }
+  }
+
+  return {
+    pix: asCentavos(pix),
+    debito: asCentavos(debito),
+    credito: asCentavos(credito),
+    taxa: asCentavos(taxa),
+    totalLiquido: asCentavos(pix + debito + credito),
+  };
+}
+
 export interface ProdutoCompleto {
   id: string;
   nome: string;
@@ -521,7 +769,8 @@ export async function adicionarEntradaMercadoria(
   produtoId: string,
   quantidade: number,
   custoUnitarioCentavos: Centavos,
-  data: string
+  data: string,
+  notaId?: string | null
 ): Promise<void> {
   const { error } = await supabase.from('entrada_mercadoria').insert({
     id,
@@ -529,8 +778,194 @@ export async function adicionarEntradaMercadoria(
     quantidade,
     custo_unitario_centavos: centavosParaNumero(custoUnitarioCentavos),
     data,
+    nota_id: notaId ?? null,
   });
   if (error) throw error;
+}
+
+/** Atualiza uma entrada de mercadoria existente (edição — Req 1). RLS: editar_entrada_merc. */
+export async function atualizarEntradaMercadoria(
+  id: string,
+  campos: { quantidade: number; custoUnitarioCentavos: Centavos; data: string }
+): Promise<void> {
+  const { error } = await supabase
+    .from('entrada_mercadoria')
+    .update({
+      quantidade: campos.quantidade,
+      custo_unitario_centavos: centavosParaNumero(campos.custoUnitarioCentavos),
+      data: campos.data,
+    })
+    .eq('id', id);
+  if (error) throw error;
+}
+
+/** Custo unitário da entrada mais recente do produto (para pré-preencher). */
+export async function ultimoCustoEntrada(produtoId: string): Promise<Centavos | null> {
+  const { data, error } = await supabase
+    .from('entrada_mercadoria')
+    .select('custo_unitario_centavos')
+    .eq('produto_id', produtoId)
+    .order('data', { ascending: false })
+    .order('criado_em', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? paraCentavos(data.custo_unitario_centavos) : null;
+}
+
+/**
+ * Registra uma entrada de mercadoria e, opcionalmente, atualiza o PREÇO DE VENDA do
+ * produto criando uma vigência em `preco_produto` na data da nota (decisão: preço
+ * vale a partir da data da entrada). Só grava preço se veio e difere do vigente.
+ * O custo da entrada fica só na linha (alimenta valor do estoque, §3.5) — NÃO mexe
+ * em `custo_produto` (custo de lucro fixado pelo gerente).
+ */
+export async function registrarEntradaComPreco(args: {
+  produtoId: string;
+  quantidade: number;
+  custo: Centavos;
+  data: string;
+  precoVenda?: Centavos | null;
+  precoVendaVigente?: Centavos | null;
+  notaId?: string | null;
+}): Promise<void> {
+  await adicionarEntradaMercadoria(uuidv7(), args.produtoId, args.quantidade, args.custo, args.data, args.notaId ?? null);
+  if (
+    args.precoVenda != null &&
+    args.precoVenda > 0n &&
+    args.precoVenda !== (args.precoVendaVigente ?? null)
+  ) {
+    await adicionarPrecoProduto(uuidv7(), args.produtoId, args.precoVenda, args.data);
+  }
+}
+
+export interface NotaResumo {
+  notaId: string;
+  data: string;
+  itens: number;
+  totalCentavos: Centavos;
+}
+
+/** Notas de entrada de mercadoria (agrupadas por nota_id), mais recentes primeiro. */
+export async function listarNotasMercadoria(): Promise<NotaResumo[]> {
+  const { data, error } = await supabase
+    .from('entrada_mercadoria')
+    .select('nota_id, quantidade, custo_unitario_centavos, data')
+    .not('nota_id', 'is', null)
+    .order('data', { ascending: false });
+  if (error) throw error;
+  const linhas = (data ?? []) as Array<{ nota_id: string; quantidade: number; custo_unitario_centavos: number; data: string }>;
+  const mapa = new Map<string, NotaResumo>();
+  for (const l of linhas) {
+    const atual = mapa.get(l.nota_id) ?? { notaId: l.nota_id, data: l.data, itens: 0, totalCentavos: asCentavos(0n) };
+    atual.itens += 1;
+    atual.totalCentavos = asCentavos(
+      (atual.totalCentavos as bigint) + BigInt(Math.round(Number(l.quantidade) * l.custo_unitario_centavos)),
+    );
+    mapa.set(l.nota_id, atual);
+  }
+  return [...mapa.values()];
+}
+
+export interface ItemNota {
+  entradaId: string;
+  produtoId: string;
+  nome: string;
+  quantidade: number;
+  custoUnitarioCentavos: Centavos;
+  precoVendaVigente: Centavos | null;
+}
+
+/** Itens de uma nota de mercadoria, para carregar no editor da notinha. */
+export async function listarItensNotaMercadoria(notaId: string): Promise<{ data: string; itens: ItemNota[] }> {
+  const { data, error } = await supabase
+    .from('entrada_mercadoria')
+    .select('id, produto_id, quantidade, custo_unitario_centavos, data, produto:produto_id(nome)')
+    .eq('nota_id', notaId)
+    .order('criado_em', { ascending: true });
+  if (error) throw error;
+  const linhas = (data ?? []) as unknown as Array<{
+    id: string; produto_id: string; quantidade: number; custo_unitario_centavos: number; data: string;
+    produto: { nome: string } | { nome: string }[] | null;
+  }>;
+  const itens: ItemNota[] = linhas.map((l) => ({
+    entradaId: l.id,
+    produtoId: l.produto_id,
+    nome: nomeRel(l.produto) ?? '—',
+    quantidade: Number(l.quantidade),
+    custoUnitarioCentavos: paraCentavos(l.custo_unitario_centavos),
+    precoVendaVigente: null,
+  }));
+  return { data: linhas[0]?.data ?? hojeManaus(), itens };
+}
+
+/**
+ * Total de SAÍDAS (vendido) por produto no período [de, ate], por conservação de
+ * estoque: contagem → estoque_início + entradas − perdas − estoque_fim; individual
+ * → soma de venda_avulsa. Reusa `obterDadosProdutosNaData` (estoque derivado numa
+ * data). Retorna Map<produtoId, unidades>.
+ */
+export async function listarSaidasProdutoPeriodo(de: string, ate: string): Promise<Map<string, number>> {
+  const diaAntesDe = (() => {
+    const d = new Date(`${de}T00:00:00`);
+    d.setDate(d.getDate() - 1);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  })();
+  const inicioVenda = limitesDoDiaManaus(de).inicio;
+  const fimVenda = limitesDoDiaManaus(ate).fim;
+
+  const [estoqueInicioArr, estoqueFimArr, entRes, perdaRes, vendaRes, prodRes] = await Promise.all([
+    obterDadosProdutosNaData(diaAntesDe),
+    obterDadosProdutosNaData(ate),
+    supabase.from('entrada_mercadoria').select('produto_id, quantidade').gte('data', de).lte('data', ate),
+    supabase.from('perda').select('produto_id, quantidade').gte('data', de).lte('data', ate),
+    supabase.from('venda_avulsa').select('produto_id, quantidade').gte('data_hora', inicioVenda).lt('data_hora', fimVenda),
+    supabase.from('produto').select('id, modo_apuracao'),
+  ]);
+
+  const somarPorProduto = (rows: Array<{ produto_id: string; quantidade: number }> | null) => {
+    const m = new Map<string, number>();
+    for (const r of rows ?? []) m.set(r.produto_id, (m.get(r.produto_id) ?? 0) + Number(r.quantidade));
+    return m;
+  };
+  const entradas = somarPorProduto(entRes.data as Array<{ produto_id: string; quantidade: number }> | null);
+  const perdas = somarPorProduto(perdaRes.data as Array<{ produto_id: string; quantidade: number }> | null);
+  const vendasAvulsas = somarPorProduto(vendaRes.data as Array<{ produto_id: string; quantidade: number }> | null);
+  const estoqueInicio = new Map(estoqueInicioArr.map((p) => [p.id, p.estoque]));
+  const estoqueFim = new Map(estoqueFimArr.map((p) => [p.id, p.estoque]));
+  const modo = new Map(
+    ((prodRes.data ?? []) as Array<{ id: string; modo_apuracao: string }>).map((p) => [p.id, p.modo_apuracao]),
+  );
+
+  const saidas = new Map<string, number>();
+  for (const p of estoqueFimArr) {
+    if (modo.get(p.id) === 'individual') {
+      saidas.set(p.id, vendasAvulsas.get(p.id) ?? 0);
+    } else {
+      const vendido =
+        (estoqueInicio.get(p.id) ?? 0) +
+        (entradas.get(p.id) ?? 0) -
+        (perdas.get(p.id) ?? 0) -
+        (estoqueFim.get(p.id) ?? 0);
+      saidas.set(p.id, vendido > 0 ? vendido : 0);
+    }
+  }
+  return saidas;
+}
+
+/** Total de entradas de mercadoria por produto numa DATA (para a coluna do dia). */
+export async function entradasMercadoriaDoDia(data: string): Promise<Map<string, number>> {
+  const { data: rows, error } = await supabase
+    .from('entrada_mercadoria')
+    .select('produto_id, quantidade')
+    .eq('data', data);
+  if (error) throw error;
+  const m = new Map<string, number>();
+  for (const r of (rows ?? []) as Array<{ produto_id: string; quantidade: number }>) {
+    m.set(r.produto_id, (m.get(r.produto_id) ?? 0) + Number(r.quantidade));
+  }
+  return m;
 }
 
 // =====================================================================
@@ -722,6 +1157,7 @@ export async function adicionarEntradaCombustivel(
   litros: number,
   custoLitroCentavos: Centavos,
   data: string,
+  notaId?: string | null,
 ): Promise<void> {
   const { error } = await supabase.from('entrada_combustivel').insert({
     id,
@@ -729,8 +1165,117 @@ export async function adicionarEntradaCombustivel(
     litros,
     custo_litro_centavos: centavosParaNumero(custoLitroCentavos),
     data,
+    nota_id: notaId ?? null,
   });
   if (error) throw error;
+}
+
+/** Atualiza uma entrada de combustível existente (edição). RLS: editar_entrada_comb. */
+export async function atualizarEntradaCombustivel(
+  id: string,
+  campos: { litros: number; custoLitroCentavos: Centavos; data: string }
+): Promise<void> {
+  const { error } = await supabase
+    .from('entrada_combustivel')
+    .update({
+      litros: campos.litros,
+      custo_litro_centavos: centavosParaNumero(campos.custoLitroCentavos),
+      data: campos.data,
+    })
+    .eq('id', id);
+  if (error) throw error;
+}
+
+/** Custo/litro da entrada de carga mais recente do tanque (para pré-preencher). */
+export async function ultimoCustoCombustivel(tanqueId: string): Promise<Centavos | null> {
+  const { data, error } = await supabase
+    .from('entrada_combustivel')
+    .select('custo_litro_centavos')
+    .eq('tanque_id', tanqueId)
+    .order('data', { ascending: false })
+    .order('criado_em', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? paraCentavos(data.custo_litro_centavos) : null;
+}
+
+/**
+ * Registra uma entrada de carga e, opcionalmente, atualiza o PREÇO DE VENDA do
+ * combustível (vigência em `preco_combustivel` na data da nota). O preço é por
+ * COMBUSTÍVEL (não por tanque), então só grava se vier `combustivelId` + `precoVenda`
+ * diferente do vigente. Combustível NÃO afeta o caixa (sem cascata).
+ */
+export async function registrarEntradaCombustivelComPreco(args: {
+  tanqueId: string;
+  litros: number;
+  custo: Centavos;
+  data: string;
+  notaId?: string | null;
+  combustivelId?: string | null;
+  precoVenda?: Centavos | null;
+  precoVendaVigente?: Centavos | null;
+}): Promise<void> {
+  await adicionarEntradaCombustivel(uuidv7(), args.tanqueId, args.litros, args.custo, args.data, args.notaId ?? null);
+  if (
+    args.combustivelId &&
+    args.precoVenda != null &&
+    args.precoVenda > 0n &&
+    args.precoVenda !== (args.precoVendaVigente ?? null)
+  ) {
+    await adicionarPrecoCombustivel(uuidv7(), args.combustivelId, args.precoVenda, args.data);
+  }
+}
+
+/** Notas de entrada de combustível (agrupadas por nota_id), mais recentes primeiro. */
+export async function listarNotasCombustivel(): Promise<NotaResumo[]> {
+  const { data, error } = await supabase
+    .from('entrada_combustivel')
+    .select('nota_id, litros, custo_litro_centavos, data')
+    .not('nota_id', 'is', null)
+    .order('data', { ascending: false });
+  if (error) throw error;
+  const linhas = (data ?? []) as Array<{ nota_id: string; litros: number; custo_litro_centavos: number; data: string }>;
+  const mapa = new Map<string, NotaResumo>();
+  for (const l of linhas) {
+    const atual = mapa.get(l.nota_id) ?? { notaId: l.nota_id, data: l.data, itens: 0, totalCentavos: asCentavos(0n) };
+    atual.itens += 1;
+    atual.totalCentavos = asCentavos(
+      (atual.totalCentavos as bigint) + BigInt(Math.round(Number(l.litros) * l.custo_litro_centavos)),
+    );
+    mapa.set(l.nota_id, atual);
+  }
+  return [...mapa.values()];
+}
+
+export interface ItemNotaCombustivel {
+  entradaId: string;
+  tanqueId: string;
+  nome: string;
+  litros: number;
+  custoLitroCentavos: Centavos;
+}
+
+/** Itens de uma nota de combustível, para carregar no editor da notinha. */
+export async function listarItensNotaCombustivel(notaId: string): Promise<{ data: string; itens: ItemNotaCombustivel[] }> {
+  const { data, error } = await supabase
+    .from('entrada_combustivel')
+    .select('id, tanque_id, litros, custo_litro_centavos, data, tanque:tanque_id(nome)')
+    .eq('nota_id', notaId)
+    .order('criado_em', { ascending: true });
+  if (error) throw error;
+  const linhas = (data ?? []) as unknown as Array<{
+    id: string; tanque_id: string; litros: number; custo_litro_centavos: number; data: string;
+    tanque: { nome: string } | { nome: string }[] | null;
+  }>;
+  const itens: ItemNotaCombustivel[] = linhas.map((l) => ({
+    entradaId: l.id,
+    tanqueId: l.tanque_id,
+    nome: nomeRel(l.tanque) ?? '—',
+    litros: Number(l.litros),
+    custoLitroCentavos: paraCentavos(l.custo_litro_centavos),
+  }));
+  return { data: linhas[0]?.data ?? hojeManaus(), itens };
 }
 
 export interface MedicaoTanque {
@@ -1081,6 +1626,86 @@ export async function lancarTransferencia(
   });
 }
 
+/** Categoria especial fixa das tarifas de PIX automáticas (ver migration). */
+const CAT_TARIFA_PIX_ID = 'f1a2b3c4-d5e6-4f00-8a00-000000000001';
+
+/**
+ * Gera (ou regenera) a despesa AUTOMÁTICA de tarifa de PIX presa a um pagamento.
+ *
+ * Regra (Pilar 1 — derivado): só quando o pagamento é por PIX, sai de uma conta de
+ * BANCO e a conta tem tarifa de PIX vigente na data. Apaga a tarifa anterior do
+ * mesmo pagamento (se houver) e cria a nova pela regra vigente. A tarifa fica presa
+ * ao pagamento por `origem_movimento_id` (cascade apaga junto). Tarifa zero não
+ * gera linha. Nunca é chamada para a própria tarifa, então não há recursão.
+ */
+async function sincronizarTarifaPixDespesa(
+  s: SupabaseClient,
+  args: {
+    pagamentoId: string;
+    contaId: string;
+    valor: Centavos;
+    formaPagamento: string | null;
+    dataHora: string;
+    descricaoPagamento: string;
+    criadoPor: string;
+  },
+): Promise<void> {
+  // Limpa qualquer tarifa anterior deste pagamento (caso de edição).
+  await s.from('movimento').delete().eq('origem_movimento_id', args.pagamentoId);
+
+  if (args.formaPagamento !== 'pix') return;
+
+  const { data: conta, error: eConta } = await s
+    .from('conta')
+    .select('tipo, nome')
+    .eq('id', args.contaId)
+    .maybeSingle();
+  if (eConta) throw eConta;
+  if (!conta || conta.tipo !== 'banco') return;
+
+  const dia = args.dataHora.slice(0, 10);
+  const { data: rows, error: eTaxa } = await s
+    .from('taxa_pix_conta')
+    .select('percentual_bp, minimo_centavos, maximo_centavos, valido_a_partir_de')
+    .eq('conta_id', args.contaId);
+  if (eTaxa) throw eTaxa;
+
+  const historico: RegistroTaxaPix[] = ((rows ?? []) as TaxaPixContaRow[]).map((t) => ({
+    percentualBp: BigInt(t.percentual_bp),
+    minimo: asCentavos(BigInt(t.minimo_centavos)),
+    maximo: asCentavos(BigInt(t.maximo_centavos)),
+    validoApartirDe: t.valido_a_partir_de,
+  }));
+  const regra = taxaPixVigenteEm(historico, dia);
+  const tarifa = tarifaPix({
+    valor: args.valor,
+    percentualBp: regra.percentualBp,
+    minimo: regra.minimo,
+    maximo: regra.maximo,
+  });
+  if (tarifa <= 0n) return;
+
+  const pct = (Number(regra.percentualBp) / 100).toFixed(2).replace('.', ',');
+  const descricao =
+    `Tarifa de PIX (${pct}%) — pagamento de ${formatReais(args.valor)}` +
+    `${args.descricaoPagamento ? ` (${args.descricaoPagamento})` : ''} em ${dia.split('-').reverse().join('/')}`;
+
+  const { error } = await s.from('movimento').insert({
+    id: uuidv7(),
+    tipo: 'despesa',
+    conta_id: args.contaId,
+    valor_centavos: -centavosParaNumero(tarifa),
+    data_hora: args.dataHora,
+    categoria_despesa_id: CAT_TARIFA_PIX_ID,
+    forma_pagamento: null,
+    descricao,
+    tags: [],
+    origem_movimento_id: args.pagamentoId,
+    criado_por: args.criadoPor,
+  });
+  if (error) throw error;
+}
+
 export async function lancarDespesa(
   id: string,
   contaOrigemId: string,
@@ -1107,6 +1732,15 @@ export async function lancarDespesa(
     criado_por: criadoPor
   });
   if (error) throw error;
+  await sincronizarTarifaPixDespesa(s, {
+    pagamentoId: id,
+    contaId: contaOrigemId,
+    valor: valorCentavos,
+    formaPagamento,
+    dataHora,
+    descricaoPagamento: descricao,
+    criadoPor,
+  });
   await registrarAuditoria({
     entidade: 'despesa',
     entidadeId: id,
@@ -1122,6 +1756,7 @@ export interface DespesaDoDia {
   valor: Centavos; // magnitude positiva (o movimento guarda com sinal negativo)
   descricao: string | null;
   categoriaNome: string | null;
+  contaId: string | null;
   contaNome: string | null;
   contaTipo: string | null;
   formaPagamento: string | null;
@@ -1142,7 +1777,7 @@ export async function listarDespesasDoDia(data: string): Promise<DespesaDoDia[]>
     .from('movimento')
     .select(
       'id,tipo,valor_centavos,data_hora,descricao,forma_pagamento,fechamento_id,' +
-        'conta:conta_id(nome,tipo),categoria:categoria_despesa_id(nome),funcionario:funcionario_id(nome)',
+        'conta:conta_id(id,nome,tipo),categoria:categoria_despesa_id(nome),funcionario:funcionario_id(nome)',
     )
     .in('tipo', ['despesa', 'vale', 'prolabore'])
     .gte('data_hora', inicio)
@@ -1158,7 +1793,7 @@ export async function listarDespesasDoDia(data: string): Promise<DespesaDoDia[]>
     descricao: string | null;
     forma_pagamento: string | null;
     fechamento_id: string | null;
-    conta: { nome: string; tipo: string } | { nome: string; tipo: string }[] | null;
+    conta: { id: string; nome: string; tipo: string } | { id: string; nome: string; tipo: string }[] | null;
     categoria: RelNome;
     funcionario: RelNome;
   }>;
@@ -1184,6 +1819,7 @@ export async function listarDespesasDoDia(data: string): Promise<DespesaDoDia[]>
       valor: asCentavos(bruto < 0n ? -bruto : bruto),
       descricao: desc,
       categoriaNome: catNome,
+      contaId: conta?.id ?? null,
       contaNome: conta?.nome ?? null,
       contaTipo: conta?.tipo ?? null,
       formaPagamento: m.forma_pagamento,
@@ -1289,6 +1925,16 @@ export async function atualizarDespesa(
     .eq('id', id);
   if (error) throw error;
 
+  await sincronizarTarifaPixDespesa(s, {
+    pagamentoId: id,
+    contaId: contaOrigemId,
+    valor: valorCentavos,
+    formaPagamento,
+    dataHora,
+    descricaoPagamento: descricao,
+    criadoPor: usuarioId,
+  });
+
   await registrarAuditoria({
     entidade: 'despesa',
     entidadeId: id,
@@ -1381,30 +2027,56 @@ export async function lancarOperacaoSocio(
   valorCentavos: Centavos,
   dataHora: string,
   descricao: string,
-  criadoPor: string
+  criadoPor: string,
+  formaPagamento: string | null = null,
 ): Promise<void> {
-  const multiplicador = (tipo === 'aporte_emprestimo' || tipo === 'aporte_aumento') ? 1 : -1;
+  const ehEntrada = tipo === 'aporte_emprestimo' || tipo === 'aporte_aumento';
+  const multiplicador = ehEntrada ? 1 : -1;
   const valor = centavosParaNumero(valorCentavos) * multiplicador;
+  // Forma de pagamento só faz sentido na SAÍDA (devolução/pró-labore). Aporte é
+  // dinheiro entrando: não há "valor enviado", então nunca paga tarifa de PIX.
+  const forma = ehEntrada ? null : (formaPagamento || null);
 
-  const { error } = await supabase.from('movimento').insert({
+  const { error } = await supabase.from('movimento').upsert({
     id,
     tipo,
     conta_id: contaId,
     valor_centavos: valor,
     data_hora: dataHora,
     socio_id: socioId,
+    forma_pagamento: forma,
     descricao,
     criado_por: criadoPor
   });
   if (error) throw error;
+
+  // Saída por PIX de conta de banco também paga a tarifa do banco. Sempre chamado
+  // (mesmo em aporte, com forma null) para limpar tarifa antiga numa edição.
+  await sincronizarTarifaPixDespesa(supabase, {
+    pagamentoId: id,
+    contaId,
+    valor: valorCentavos,
+    formaPagamento: forma,
+    dataHora,
+    descricaoPagamento: descricao || OPERACAO_SOCIO_LABEL[tipo] || 'Operação de sócio',
+    criadoPor,
+  });
+
   await registrarAuditoria({
     entidade: 'socio',
     entidadeId: id,
     acao: 'criar',
     usuarioId: criadoPor,
-    depois: { tipo, socio_id: socioId, valor_centavos: valor, descricao },
+    depois: { tipo, socio_id: socioId, valor_centavos: valor, descricao, forma_pagamento: forma },
   });
 }
+
+const OPERACAO_SOCIO_LABEL: Record<string, string> = {
+  aporte_emprestimo: 'Aporte (empréstimo)',
+  aporte_aumento: 'Aporte (capital)',
+  devolucao_emprestimo: 'Devolução de empréstimo',
+  prolabore: 'Pró-labore',
+};
 
 export interface CategoriaDespesa {
   id: string;
@@ -1855,6 +2527,7 @@ export interface MovimentoLista {
   contraparteNome: string | null;
   categoriaDespesaId: string | null;
   categoriaNome: string | null;
+  socioId: string | null;
   socioNome: string | null;
   usuarioNome: string | null;
   funcionarioId: string | null;
@@ -1862,6 +2535,8 @@ export interface MovimentoLista {
   fechamentoId: string | null;
   fechamentoStatus: 'aberto' | 'travado' | null;
   fechamentoData: string | null;
+  /** Quando preenchido, é um lançamento DERIVADO de outro (ex.: tarifa de PIX). */
+  origemMovimentoId: string | null;
 }
 
 type RelNome = { nome: string } | { nome: string }[] | null;
@@ -1880,9 +2555,9 @@ export async function listarMovimentos(tipos?: string[], limite = 500): Promise<
   let consulta = supabase
     .from('movimento')
     .select(
-      'id,tipo,valor_centavos,data_hora,descricao,forma_pagamento,tags,conta_id,categoria_despesa_id,fechamento_id,' +
+      'id,tipo,valor_centavos,data_hora,descricao,forma_pagamento,tags,conta_id,categoria_despesa_id,fechamento_id,origem_movimento_id,' +
         'conta:conta_id(nome),contraparte:contraparte_conta_id(nome),' +
-        'categoria:categoria_despesa_id(nome),socio:socio_id(nome),usuario:criado_por(nome),' +
+        'categoria:categoria_despesa_id(nome),socio:socio_id(id,nome),usuario:criado_por(nome),' +
         'funcionario:funcionario_id(id,nome),' +
         'fechamento:fechamento_id(id,status,data)'
     )
@@ -1905,10 +2580,11 @@ export async function listarMovimentos(tipos?: string[], limite = 500): Promise<
     conta_id: string | null;
     categoria_despesa_id: string | null;
     fechamento_id: string | null;
+    origem_movimento_id: string | null;
     conta: RelNome;
     contraparte: RelNome;
     categoria: RelNome;
-    socio: RelNome;
+    socio: { id: string; nome: string } | { id: string; nome: string }[] | null;
     usuario: RelNome;
     funcionario: { id: string; nome: string } | { id: string; nome: string }[] | null;
     fechamento: { id: string; status: string; data: string } | { id: string; status: string; data: string }[] | null;
@@ -1929,6 +2605,7 @@ export async function listarMovimentos(tipos?: string[], limite = 500): Promise<
       contraparteNome: nomeRel(m.contraparte),
       categoriaDespesaId: m.categoria_despesa_id,
       categoriaNome: nomeRel(m.categoria),
+      socioId: m.socio ? (Array.isArray(m.socio) ? m.socio[0]?.id : m.socio.id) ?? null : null,
       socioNome: nomeRel(m.socio),
       usuarioNome: nomeRel(m.usuario),
       funcionarioId: m.funcionario ? (Array.isArray(m.funcionario) ? m.funcionario[0]?.id : m.funcionario.id) ?? null : null,
@@ -1936,6 +2613,7 @@ export async function listarMovimentos(tipos?: string[], limite = 500): Promise<
       fechamentoId: m.fechamento_id,
       fechamentoStatus: fech ? (fech.status === 'travado' || fech.status === 'confirmado' ? 'travado' : 'aberto') : null,
       fechamentoData: fech?.data ?? null,
+      origemMovimentoId: m.origem_movimento_id,
     };
   });
 }
@@ -2134,25 +2812,38 @@ export async function salvarFuncionario(f: Funcionario): Promise<void> {
 
 /** Vale = adiantamento que sai do caixa (saída) e desconta do salário no mês. */
 export async function lancarVale(
+  id: string,
   funcionarioId: string,
   contaId: string,
   valor: Centavos,
   dataHora: string,
   descricao: string,
   criadoPor: string,
+  formaPagamento: string = 'dinheiro',
 ): Promise<void> {
-  const { error } = await supabase.from('movimento').insert({
-    id: uuidv7(),
+  const { error } = await supabase.from('movimento').upsert({
+    id,
     tipo: 'vale',
     conta_id: contaId,
     valor_centavos: -centavosParaNumero(valor),
     data_hora: dataHora,
     funcionario_id: funcionarioId,
-    forma_pagamento: 'dinheiro',
+    forma_pagamento: formaPagamento,
     descricao,
     criado_por: criadoPor,
   });
   if (error) throw error;
+
+  // Vale pago via PIX de uma conta de banco também paga a tarifa do banco.
+  await sincronizarTarifaPixDespesa(supabase, {
+    pagamentoId: id,
+    contaId,
+    valor,
+    formaPagamento,
+    dataHora,
+    descricaoPagamento: descricao,
+    criadoPor,
+  });
 }
 
 /** Soma dos vales de um funcionário na competência (mês de `competencia` = AAAA-MM-01). */
@@ -2274,20 +2965,54 @@ export async function pagarFechamentoFolha(
 
   if (errUpdate) throw errUpdate;
 
+  const movId = uuidv7();
+  const descricaoSalario = `Pagamento Salário — ${funcNome} ref. ${compLabel}`;
   const { error: errMov } = await supabase.from('movimento').insert({
-    id: uuidv7(),
+    id: movId,
     tipo: 'despesa',
     conta_id: contaId,
     valor_centavos: -Number(aReceberCentavos),
     data_hora: pagoEm,
     funcionario_id: funcId,
     forma_pagamento: formaPagamento,
-    descricao: `Pagamento Salário — ${funcNome} ref. ${compLabel}`,
+    descricao: descricaoSalario,
     categoria_despesa_id: '00000000-0000-7000-8000-000000000022',
     criado_por: criadoPor,
   });
 
   if (errMov) throw errMov;
+
+  // Salário pago via PIX de uma conta de banco também paga a tarifa do banco.
+  await sincronizarTarifaPixDespesa(supabase, {
+    pagamentoId: movId,
+    contaId,
+    valor: asCentavos(aReceberCentavos),
+    formaPagamento,
+    dataHora: pagoEm,
+    descricaoPagamento: descricaoSalario,
+    criadoPor,
+  });
+}
+
+export async function removerPagamentoFolha(fechamentoId: string, usuarioId: string): Promise<void> {
+  const { data: fechamento } = await supabase
+    .from('fechamento_folha')
+    .select('funcionario_id, pago_em')
+    .eq('id', fechamentoId)
+    .maybeSingle();
+  if (!fechamento || !fechamento.pago_em) return;
+
+  const { data: mov } = await supabase
+    .from('movimento')
+    .select('id')
+    .eq('funcionario_id', fechamento.funcionario_id)
+    .eq('data_hora', fechamento.pago_em)
+    .eq('tipo', 'despesa')
+    .maybeSingle();
+
+  if (mov) {
+    await removerDespesa(mov.id, usuarioId);
+  }
 }
 
 /** Obtém a soma dos vales de todos os funcionários em uma competência, agrupada por funcionário ID. */
@@ -2527,6 +3252,230 @@ export async function obterVendasHistorico(hoje: string, dias = 90): Promise<{ d
       valor: Number(valor) / 100,
     }))
     .sort((a, b) => a.data.localeCompare(b.data));
+}
+
+function agruparVigencia(rows: any[], key: string): Map<string, RegistroVigencia[]> {
+  const mapa = new Map<string, RegistroVigencia[]>();
+  for (const r of rows) {
+    const id = r[key];
+    const lista = mapa.get(id) ?? [];
+    lista.push({
+      valorCentavos: asCentavos(BigInt(r.valor_centavos)),
+      validoApartirDe: r.valido_a_partir_de,
+    });
+    mapa.set(id, lista);
+  }
+  return mapa;
+}
+
+export interface LucroDia {
+  data: string;
+  faturamento: number;
+  custo: number;
+  despesas: number;
+  diferenca: number;
+  lucroBruto: number;
+  lucroLiquido: number;
+}
+
+export async function obterLucroHistorico(hoje: string, dias = 90): Promise<LucroDia[]> {
+  const dataLimite = new Date(hoje);
+  dataLimite.setDate(dataLimite.getDate() - dias);
+  const dataLimiteStr = dataLimite.toLocaleDateString('en-CA', { timeZone: 'America/Manaus' });
+
+  const { data: fechamentos } = await supabase
+    .from('fechamento')
+    .select('id, data')
+    .gte('data', dataLimiteStr)
+    .lte('data', hoje)
+    .eq('status', 'travado')
+    .order('data', { ascending: true });
+
+  if (!fechamentos || fechamentos.length === 0) return [];
+
+  const ids = fechamentos.map((f) => f.id);
+
+  const { data: anteriorRaw } = await supabase
+    .from('fechamento')
+    .select('id, data')
+    .lt('data', fechamentos[0]!.data)
+    .eq('status', 'travado')
+    .order('data', { ascending: false })
+    .limit(1);
+  const baseline = anteriorRaw && anteriorRaw.length > 0 ? anteriorRaw[0] : null;
+  const idsComBaseline = baseline ? [...ids, baseline.id] : ids;
+
+  const [
+    { data: contagensRaw },
+    { data: leiturasRaw },
+    { data: entradasRaw },
+    { data: perdasRaw },
+    { data: vendasAvulsasRaw },
+    { data: movimentosRaw },
+    { data: produtosRaw },
+    { data: bombasRaw },
+    { data: custosProdRaw },
+    { data: custosCombRaw },
+    { data: precosProdRaw },
+    { data: precosCombRaw },
+    { data: categoriasRaw }
+  ] = await Promise.all([
+    supabase.from('contagem_produto').select('fechamento_id, produto_id, quantidade').in('fechamento_id', idsComBaseline),
+    supabase.from('leitura_bomba').select('fechamento_id, bomba_id, leitura').in('fechamento_id', idsComBaseline),
+    supabase.from('entrada_mercadoria').select('fechamento_id, produto_id, quantidade').in('fechamento_id', ids),
+    supabase.from('perda').select('fechamento_id, produto_id, quantidade').in('fechamento_id', ids),
+    supabase.from('venda_avulsa').select('fechamento_id, produto_id, quantidade, valor_centavos').in('fechamento_id', ids),
+    supabase.from('movimento').select('fechamento_id, tipo, valor_centavos, categoria_despesa_id').in('fechamento_id', ids),
+    supabase.from('produto').select('id, modo_apuracao'),
+    supabase.from('bomba').select('id, tanque:tanque_id(combustivel_id)'),
+    supabase.from('custo_produto').select('produto_id, valor_centavos, valido_a_partir_de'),
+    supabase.from('custo_combustivel').select('combustivel_id, valor_centavos, valido_a_partir_de'),
+    supabase.from('preco_produto').select('produto_id, valor_centavos, valido_a_partir_de'),
+    supabase.from('preco_combustivel').select('combustivel_id, valor_centavos, valido_a_partir_de'),
+    supabase.from('categoria_despesa').select('id, nome')
+  ]);
+
+  const histPrecoProd = agruparVigencia(precosProdRaw ?? [], 'produto_id');
+  const histCustoProd = agruparVigencia(custosProdRaw ?? [], 'produto_id');
+  const histPrecoComb = agruparVigencia(precosCombRaw ?? [], 'combustivel_id');
+  const histCustoComb = agruparVigencia(custosCombRaw ?? [], 'combustivel_id');
+
+  const categoriasFornecedores = new Set(
+    (categoriasRaw ?? [])
+      .filter((c: any) => c.nome.toLowerCase().includes('fornecedor'))
+      .map((c: any) => c.id)
+  );
+
+  const combustivelPorBomba = new Map<string, string>();
+  for (const b of (bombasRaw ?? []) as any[]) {
+    const tanque = Array.isArray(b.tanque) ? b.tanque[0] : b.tanque;
+    if (tanque?.combustivel_id) {
+      combustivelPorBomba.set(b.id, tanque.combustivel_id);
+    }
+  }
+
+  const contagensPorFech = new Map<string, Map<string, number>>();
+  for (const c of (contagensRaw ?? []) as any[]) {
+    const mapa = contagensPorFech.get(c.fechamento_id) ?? new Map<string, number>();
+    mapa.set(c.produto_id, Number(c.quantidade));
+    contagensPorFech.set(c.fechamento_id, mapa);
+  }
+
+  const leiturasPorFech = new Map<string, Map<string, number>>();
+  for (const l of (leiturasRaw ?? []) as any[]) {
+    const mapa = leiturasPorFech.get(l.fechamento_id) ?? new Map<string, number>();
+    mapa.set(l.bomba_id, Number(l.leitura));
+    leiturasPorFech.set(l.fechamento_id, mapa);
+  }
+
+  const lucrosDiarios: LucroDia[] = [];
+
+  for (let idx = 0; idx < fechamentos.length; idx++) {
+    const f = fechamentos[idx];
+    if (!f) continue;
+    const dataRef = f.data;
+    const instRef = `${dataRef}T23:59:59-04:00`;
+
+    const anteriorId = idx === 0 ? baseline?.id : fechamentos[idx - 1]?.id;
+    const contagensAnt = anteriorId ? contagensPorFech.get(anteriorId) : null;
+    const leiturasAnt = anteriorId ? leiturasPorFech.get(anteriorId) : null;
+
+    const contagensAtuais = contagensPorFech.get(f.id) ?? new Map<string, number>();
+    const leiturasAtuais = leiturasPorFech.get(f.id) ?? new Map<string, number>();
+
+    let receitaTotal = 0n;
+    let custoTotal = 0n;
+
+    // A) COMBUSTÍVEL
+    for (const [bombaId, leituraAtual] of leiturasAtuais.entries()) {
+      const leituraAnt = leiturasAnt?.get(bombaId) ?? leituraAtual;
+      const litros = leituraAtual - leituraAnt;
+      if (litros <= 0) continue;
+
+      const combId = combustivelPorBomba.get(bombaId);
+      if (!combId) continue;
+
+      const precoLitro = precoVigenteEm(histPrecoComb.get(combId) ?? [], dataRef) ?? asCentavos(0n);
+      const custoLitro = custoVigenteEm(histCustoComb.get(combId) ?? [], instRef) ?? asCentavos(0n);
+
+      const receitaComb = BigInt(Math.round(litros * Number(precoLitro)));
+      const custoComb = BigInt(Math.round(litros * Number(custoLitro)));
+
+      receitaTotal += receitaComb;
+      custoTotal += custoComb;
+    }
+
+    // B) PRODUTOS
+    const entradasDoDia = (entradasRaw ?? []).filter((e: any) => e.fechamento_id === f.id);
+    const perdasDoDia = (perdasRaw ?? []).filter((p: any) => p.fechamento_id === f.id);
+    const avulsasDoDia = (vendasAvulsasRaw ?? []).filter((v: any) => v.fechamento_id === f.id);
+
+    const entPorProd = new Map<string, number>();
+    for (const e of entradasDoDia) entPorProd.set(e.produto_id, (entPorProd.get(e.produto_id) ?? 0) + Number(e.quantidade));
+
+    const perdPorProd = new Map<string, number>();
+    for (const p of perdasDoDia) perdPorProd.set(p.produto_id, (perdPorProd.get(p.produto_id) ?? 0) + Number(p.quantidade));
+
+    for (const p of (produtosRaw ?? []) as any[]) {
+      const prodId = p.id;
+      const modo = p.modo_apuracao;
+
+      const precoProd = precoVigenteEm(histPrecoProd.get(prodId) ?? [], dataRef) ?? asCentavos(0n);
+      const custoProd = custoVigenteEm(histCustoProd.get(prodId) ?? [], instRef) ?? asCentavos(0n);
+
+      if (modo === 'contagem') {
+        const estoqueAnt = contagensAnt?.get(prodId) ?? 0;
+        const estoqueAtual = contagensAtuais.get(prodId) ?? estoqueAnt;
+        const entradas = entPorProd.get(prodId) ?? 0;
+        const perdas = perdPorProd.get(prodId) ?? 0;
+
+        const vendido = estoqueAnt + entradas - estoqueAtual - perdas;
+        if (vendido <= 0) continue;
+
+        receitaTotal += BigInt(Math.round(vendido * Number(precoProd)));
+        custoTotal += BigInt(Math.round(vendido * Number(custoProd)));
+      } else {
+        const avulsas = avulsasDoDia.filter((v: any) => v.produto_id === prodId);
+        for (const av of avulsas) {
+          receitaTotal += BigInt(av.valor_centavos);
+          custoTotal += BigInt(Math.round(Number(av.quantidade) * Number(custoProd)));
+        }
+      }
+    }
+
+    // C) DESPESAS E TAXAS DO DIA
+    const movsDoDia = (movimentosRaw ?? []).filter((m: any) => m.fechamento_id === f.id);
+    let despesasDia = 0n;
+    let diferencaCaixaDia = 0n;
+
+    for (const m of movsDoDia) {
+      if (m.tipo === 'despesa') {
+        if (m.categoria_despesa_id && categoriasFornecedores.has(m.categoria_despesa_id)) {
+          continue;
+        }
+        despesasDia += BigInt(Math.abs(m.valor_centavos));
+      } else if (m.tipo === 'taxa_cartao') {
+        despesasDia += BigInt(Math.abs(m.valor_centavos));
+      } else if (m.tipo === 'diferenca_caixa') {
+        diferencaCaixaDia += BigInt(m.valor_centavos);
+      }
+    }
+
+    const lucroBruto = receitaTotal - custoTotal;
+    const lucroLiquido = lucroBruto - despesasDia + diferencaCaixaDia;
+
+    lucrosDiarios.push({
+      data: dataRef,
+      faturamento: Number(receitaTotal) / 100,
+      custo: Number(custoTotal) / 100,
+      despesas: Number(despesasDia) / 100,
+      diferenca: Number(diferencaCaixaDia) / 100,
+      lucroBruto: Number(lucroBruto) / 100,
+      lucroLiquido: Number(lucroLiquido) / 100,
+    });
+  }
+
+  return lucrosDiarios;
 }
 
 export interface CapitalHistorico {

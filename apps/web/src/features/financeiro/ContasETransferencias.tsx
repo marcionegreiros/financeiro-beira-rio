@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Transferencias } from './Transferencias';
 import { Contas } from '../catalogo/Contas';
+import type { UsuarioAtual } from '../../data/usuario';
 
 type Aba = 'transferencias' | 'contas';
 
@@ -12,11 +13,11 @@ type Aba = 'transferencias' | 'contas';
  * a barra de abas some e a tela correspondente é renderizada direto.
  */
 export function ContasETransferencias({
-  usuarioId,
+  usuario,
   podeTransferir,
   podeGerenciarContas,
 }: {
-  usuarioId: string;
+  usuario: UsuarioAtual;
   podeTransferir: boolean;
   podeGerenciarContas: boolean;
 }) {
@@ -63,7 +64,7 @@ export function ContasETransferencias({
       )}
 
       <div key={ativa} className="animar-surgir">
-        {ativa === 'transferencias' && podeTransferir && <Transferencias usuarioId={usuarioId} />}
+        {ativa === 'transferencias' && podeTransferir && <Transferencias usuario={usuario} />}
         {ativa === 'contas' && podeGerenciarContas && <Contas />}
       </div>
     </div>

@@ -21,13 +21,9 @@ import type { UsuarioAtual } from '../../data/usuario';
 import type { Centavos } from '../../lib/money';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { diaIso } from '../../lib/formato';
+import { FORMAS_PAGAMENTO, formasParaConta, formaCoerente } from '../../lib/formasPagamento';
 
-export const FORMAS_PAGAMENTO: Record<string, string> = {
-  dinheiro: 'Dinheiro',
-  pix: 'PIX',
-  debito: 'Débito',
-  credito: 'Crédito',
-};
+export { FORMAS_PAGAMENTO };
 
 interface Props {
   aberto: boolean;
@@ -130,13 +126,14 @@ export function NovaDespesaModal({
         if (!ativo) return;
         const ativas = c.filter((x) => x.ativo);
         setContas(ativas);
-        setCategorias(cat.filter((x) => x.nome.toLowerCase() !== 'perda'));
+        setCategorias(cat.filter((x) => !['perda', 'tarifa de pix'].includes(x.nome.toLowerCase())));
         
         if (despesaEdicao) {
           setContaId(despesaEdicao.contaId ?? '');
           setCategoriaId(despesaEdicao.categoriaDespesaId ?? '');
           setValorStr((Number(despesaEdicao.valorCentavos) / 100).toFixed(2).replace('.', ','));
-          setFormaPagamento(despesaEdicao.formaPagamento ?? '');
+          const tipoEdicao = ativas.find((x) => x.id === despesaEdicao.contaId)?.tipo;
+          setFormaPagamento(formaCoerente(despesaEdicao.formaPagamento ?? '', tipoEdicao));
           setDescricao(despesaEdicao.descricao ?? '');
           setTagsStr(despesaEdicao.tags.join(', '));
           setDataLancamento(diaIso(despesaEdicao.dataHora));
@@ -280,6 +277,10 @@ export function NovaDespesaModal({
     }
   }
 
+  // Forma de pagamento coerente com o tipo da conta de origem (banco ≠ dinheiro).
+  const contaTipoSel = contas.find((c) => c.id === contaId)?.tipo;
+  const formasDisp = contaId ? formasParaConta(contaTipoSel) : Object.keys(FORMAS_PAGAMENTO);
+
   return (
     <>
       <Modal
@@ -299,7 +300,17 @@ export function NovaDespesaModal({
               />
             </Campo>
             <Campo label="Conta de origem" obrigatorio>
-              <select aria-label="Conta de origem" className={CLASSE_CAMPO} value={contaId} onChange={(e) => setContaId(e.target.value)}>
+              <select
+                aria-label="Conta de origem"
+                className={CLASSE_CAMPO}
+                value={contaId}
+                onChange={(e) => {
+                  const nova = e.target.value;
+                  setContaId(nova);
+                  const tipo = contas.find((c) => c.id === nova)?.tipo;
+                  setFormaPagamento((prev) => formaCoerente(prev, tipo));
+                }}
+              >
                 <option value="">De onde saiu?</option>
                 {contas.map((c) => (
                   <option key={c.id} value={c.id}>
@@ -371,9 +382,9 @@ export function NovaDespesaModal({
             <Campo label="Forma de pagamento" obrigatorio>
               <select aria-label="Forma de pagamento" className={CLASSE_CAMPO} value={formaPagamento} onChange={(e) => setFormaPagamento(e.target.value)}>
                 <option value="">Selecione…</option>
-                {Object.entries(FORMAS_PAGAMENTO).map(([k, v]) => (
+                {formasDisp.map((k) => (
                   <option key={k} value={k}>
-                    {v}
+                    {FORMAS_PAGAMENTO[k]}
                   </option>
                 ))}
               </select>

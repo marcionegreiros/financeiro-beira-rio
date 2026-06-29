@@ -6,12 +6,14 @@ import {
   listarMovimentos,
   salvarSocio,
   removerSocio,
+  removerDespesa,
   type Socio,
   type ContaCompleta,
   type MovimentoLista,
 } from '../../data/repositorios';
 import { uuidv7 } from '../../lib/uuidv7';
 import { parseReais, formatReais, negar } from '../../lib/money';
+import { FORMAS_PAGAMENTO, formasParaConta, formaCoerente } from '../../lib/formasPagamento';
 import { agoraManausISO } from '../../lib/datas';
 import { formatarDataHora, diaIso } from '../../lib/formato';
 import { useToast } from '../../components/ui/Toast';
@@ -37,19 +39,42 @@ export function Socios({ usuarioId }: { usuarioId: string }) {
   const [carregando, setCarregando] = useState(true);
 
   // Filtros
-  const [busca, setBusca] = useState('');
-  const [filtroSocio, setFiltroSocio] = useState('');
-  const [filtroTipo, setFiltroTipo] = useState('');
-  const [de, setDe] = useState('');
-  const [ate, setAte] = useState('');
+  const [busca, setBusca] = useState(() => localStorage.getItem('pontao_filtro_socios_busca') ?? '');
+  const [filtroSocio, setFiltroSocio] = useState(() => localStorage.getItem('pontao_filtro_socios_socio') ?? '');
+  const [filtroTipo, setFiltroTipo] = useState(() => localStorage.getItem('pontao_filtro_socios_tipo') ?? '');
+  const [de, setDe] = useState(() => localStorage.getItem('pontao_filtro_socios_de') ?? '');
+  const [ate, setAte] = useState(() => localStorage.getItem('pontao_filtro_socios_ate') ?? '');
+
+  useEffect(() => {
+    localStorage.setItem('pontao_filtro_socios_busca', busca);
+  }, [busca]);
+
+  useEffect(() => {
+    localStorage.setItem('pontao_filtro_socios_socio', filtroSocio);
+  }, [filtroSocio]);
+
+  useEffect(() => {
+    localStorage.setItem('pontao_filtro_socios_tipo', filtroTipo);
+  }, [filtroTipo]);
+
+  useEffect(() => {
+    localStorage.setItem('pontao_filtro_socios_de', de);
+  }, [de]);
+
+  useEffect(() => {
+    localStorage.setItem('pontao_filtro_socios_ate', ate);
+  }, [ate]);
 
   // Modal + formulário (operação)
   const [aberto, setAberto] = useState(false);
   const [socioId, setSocioId] = useState('');
   const [contaId, setContaId] = useState('');
   const [tipoOperacao, setTipoOperacao] = useState<TipoOperacao>('prolabore');
+  const [formaPagamento, setFormaPagamento] = useState('pix');
   const [valorStr, setValorStr] = useState('');
   const [descricao, setDescricao] = useState('');
+  const [operacaoData, setOperacaoData] = useState(() => agoraManausISO().slice(0, 16));
+  const [operacaoIdEdit, setOperacaoIdEdit] = useState<string | null>(null);
   const [salvando, setSalvando] = useState(false);
 
   // Modal de gestão de sócios (cadastro/edição/exclusão)
@@ -179,17 +204,43 @@ export function Socios({ usuarioId }: { usuarioId: string }) {
     }
     setSalvando(true);
     try {
-      await lancarOperacaoSocio(uuidv7(), tipoOperacao, socioId, contaId, valor, agoraManausISO(), descricao, usuarioId);
-      toast.sucesso('Operação registrada.');
+      await lancarOperacaoSocio(operacaoIdEdit ?? uuidv7(), tipoOperacao, socioId, contaId, valor, `${operacaoData}:00-04:00`, descricao, usuarioId, formaPagamento);
+      toast.sucesso('Operação salva.');
       setAberto(false);
       setValorStr('');
       setDescricao('');
+      setOperacaoIdEdit(null);
       await recarregar();
     } catch (e) {
       console.error(e);
-      toast.erro('Erro ao registrar a operação.');
+      toast.erro('Erro ao salvar a operação.');
     } finally {
       setSalvando(false);
+    }
+  }
+
+  function editarOperacao(m: MovimentoLista) {
+    setOperacaoIdEdit(m.id);
+    setTipoOperacao(m.tipo as any);
+    const tipoConta = contas.find((c) => c.id === m.contaId)?.tipo;
+    setFormaPagamento(formaCoerente(m.formaPagamento ?? 'pix', tipoConta));
+    setSocioId(m.socioId ?? '');
+    setContaId(m.contaId ?? '');
+    setValorStr(formatReais(m.valorCentavos < 0n ? negar(m.valorCentavos) : m.valorCentavos).replace('R$ ', ''));
+    setOperacaoData(m.dataHora.slice(0, 16));
+    setDescricao(m.descricao ?? '');
+    setAberto(true);
+  }
+
+  async function aoExcluirOperacao(id: string) {
+    if (!confirm('Deseja realmente excluir esta operação?')) return;
+    try {
+      await removerDespesa(id, usuarioId); // removerDespesa can remove any movimento
+      toast.sucesso('Operação excluída.');
+      await recarregar();
+    } catch (e) {
+      console.error(e);
+      toast.erro('Erro ao excluir.');
     }
   }
 
@@ -224,6 +275,23 @@ export function Socios({ usuarioId }: { usuarioId: string }) {
         );
       },
     },
+    {
+      chave: 'acoes',
+      titulo: '',
+      alinhar: 'right',
+      render: (m) => (
+        <div className="flex justify-end gap-1.5">
+          <button type="button" className="btn btn-suave px-2 py-1 text-xs" onClick={() => editarOperacao(m)}>Editar</button>
+          <button
+            type="button"
+            className="btn btn-suave px-2 py-1 text-xs text-negativo hover:bg-negativo/10"
+            onClick={() => void aoExcluirOperacao(m.id)}
+          >
+            Excluir
+          </button>
+        </div>
+      ),
+    },
   ];
 
   return (
@@ -236,7 +304,14 @@ export function Socios({ usuarioId }: { usuarioId: string }) {
             <button type="button" onClick={() => { limparFormSocio(); setGestaoAberta(true); }} className="btn btn-suave px-4 py-2 text-sm">
               Gerenciar sócios
             </button>
-            <button type="button" onClick={() => setAberto(true)} className="btn btn-primario px-4 py-2 text-sm">
+            <button type="button" onClick={() => {
+              setOperacaoIdEdit(null);
+              setValorStr('');
+              setDescricao('');
+              setFormaPagamento('pix');
+              setOperacaoData(agoraManausISO().slice(0, 16));
+              setAberto(true);
+            }} className="btn btn-primario px-4 py-2 text-sm">
               <IconePlus /> Nova operação
             </button>
           </div>
@@ -346,8 +421,21 @@ export function Socios({ usuarioId }: { usuarioId: string }) {
             </Campo>
           </div>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Campo label="Data e Hora" obrigatorio>
+              <input type="datetime-local" className={CLASSE_CAMPO} value={operacaoData} onChange={(e) => setOperacaoData(e.target.value)} />
+            </Campo>
             <Campo label="Conta impactada" obrigatorio>
-              <select aria-label="Conta impactada" className={CLASSE_CAMPO} value={contaId} onChange={(e) => setContaId(e.target.value)}>
+              <select
+                aria-label="Conta impactada"
+                className={CLASSE_CAMPO}
+                value={contaId}
+                onChange={(e) => {
+                  const nova = e.target.value;
+                  setContaId(nova);
+                  const tipo = contas.find((c) => c.id === nova)?.tipo;
+                  setFormaPagamento((prev) => formaCoerente(prev, tipo));
+                }}
+              >
                 <option value="">Selecione…</option>
                 {contas.map((c) => (
                   <option key={c.id} value={c.id}>
@@ -365,6 +453,25 @@ export function Socios({ usuarioId }: { usuarioId: string }) {
                 onChange={(e) => setValorStr(e.target.value)}
               />
             </Campo>
+            {!OPERACOES[tipoOperacao]?.entrada && (
+              <Campo
+                label="Forma de pagamento"
+                dica="PIX de conta de banco com tarifa configurada gera a tarifa automática em Despesas."
+              >
+                <select
+                  aria-label="Forma de pagamento"
+                  className={CLASSE_CAMPO}
+                  value={formaPagamento}
+                  onChange={(e) => setFormaPagamento(e.target.value)}
+                >
+                  {formasParaConta(contas.find((c) => c.id === contaId)?.tipo).map((k) => (
+                    <option key={k} value={k}>
+                      {FORMAS_PAGAMENTO[k]}
+                    </option>
+                  ))}
+                </select>
+              </Campo>
+            )}
           </div>
           <Campo label="Descrição">
             <input

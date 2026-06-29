@@ -7,13 +7,17 @@ import {
   type ContaCompleta,
   temFechamentoOperacional,
   definirSaldoInicialConta,
-  buscarSaldoInicialConta
+  buscarSaldoInicialConta,
+  listarVigenciasTaxaPixConta,
+  salvarVigenciaTaxaPixConta,
+  type VigenciaTaxaPixConta,
 } from '../../data/repositorios';
 import { uuidv7 } from '../../lib/uuidv7';
 import { useToast } from '../../components/ui/Toast';
 import { Modal } from '../../components/ui/Modal';
 import { DataTable, type Coluna } from '../../components/ui/DataTable';
-import { asCentavos } from '../../lib/money';
+import { asCentavos, parseReais } from '../../lib/money';
+import { hojeManaus } from '../../lib/datas';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { Campo, CLASSE_CAMPO } from '../../components/ui/Campo';
 import { Avatar } from '../../components/ui/Avatar';
@@ -42,6 +46,14 @@ export function Contas() {
   const [fotoFile, setFotoFile] = useState<File | null>(null);
   const [fotoPreview, setFotoPreview] = useState<string | null>(null);
 
+  // Tarifa de PIX por conta de banco (com vigência por data). Base pronta — vazia
+  // até o gerente preencher cada campo (percentual / mínima / máxima).
+  const [pixVigenteEm, setPixVigenteEm] = useState(() => hojeManaus());
+  const [pixPercentual, setPixPercentual] = useState('');
+  const [pixMinimo, setPixMinimo] = useState('');
+  const [pixMaximo, setPixMaximo] = useState('');
+  const [pixHistorico, setPixHistorico] = useState<VigenciaTaxaPixConta[]>([]);
+
   async function carregar() {
     try {
       const dados = await listarContasCompletas();
@@ -69,6 +81,11 @@ export function Contas() {
     setFotoFile(null);
     setFotoPreview(null);
     setSaldoInicial('');
+    setPixVigenteEm(hojeManaus());
+    setPixPercentual('');
+    setPixMinimo('');
+    setPixMaximo('');
+    setPixHistorico([]);
   }
 
   function abrirNova() {
@@ -94,6 +111,26 @@ export function Contas() {
         }
       })
       .catch(console.error);
+
+    // Tarifa de PIX: carrega o histórico e pré-preenche com a vigência mais recente.
+    setPixVigenteEm(hojeManaus());
+    setPixPercentual('');
+    setPixMinimo('');
+    setPixMaximo('');
+    setPixHistorico([]);
+    if (conta.tipo === 'banco') {
+      listarVigenciasTaxaPixConta(conta.id)
+        .then((hist) => {
+          setPixHistorico(hist);
+          const atual = hist[0];
+          if (atual) {
+            setPixPercentual(centesimosParaInput(atual.percentualBp));
+            setPixMinimo(centesimosParaInput(atual.minimoCentavos));
+            setPixMaximo(centesimosParaInput(atual.maximoCentavos));
+          }
+        })
+        .catch(console.error);
+    }
 
     setAberto(true);
   }
@@ -132,6 +169,20 @@ export function Contas() {
           const centavos = asCentavos(BigInt(Math.round(num * 100)));
           await definirSaldoInicialConta(id, centavos, null);
         }
+      }
+
+      // Tarifa de PIX (só conta de banco): grava uma nova vigência se algum campo
+      // foi preenchido. parseReais('1,45') = 145, igual aos basis points de 1,45%.
+      if (tipo === 'banco' && (pixPercentual.trim() || pixMinimo.trim() || pixMaximo.trim())) {
+        await salvarVigenciaTaxaPixConta({
+          contaId: id,
+          data: pixVigenteEm,
+          taxa: {
+            percentualBp: Number(parseReais(pixPercentual || '0')),
+            minimoCentavos: Number(parseReais(pixMinimo || '0')),
+            maximoCentavos: Number(parseReais(pixMaximo || '0')),
+          },
+        });
       }
 
       toast.sucesso(editandoId ? 'Conta atualizada.' : 'Conta criada.');
@@ -363,6 +414,79 @@ export function Contas() {
             </label>
           </div>
 
+          {tipo === 'banco' && (
+            <div className="flex flex-col gap-3 rounded-xl border border-borda p-4">
+              <div className="flex items-start gap-2">
+                <IconePix />
+                <div>
+                  <h3 className="text-sm font-semibold text-claro">Tarifa de PIX</h3>
+                  <p className="text-xs text-suave">
+                    Cobrada sobre o valor enviado em cada PIX desta conta. Deixe em branco enquanto não
+                    souber — preencha cada campo quando o banco informar. As alterações guardam histórico
+                    pela data de vigência (PIX antigos mantêm a tarifa da época).
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <Campo label="Vigência" dica="A partir de qual data esta tarifa passa a valer.">
+                  <input
+                    type="date"
+                    className={CLASSE_CAMPO}
+                    value={pixVigenteEm}
+                    onChange={(e) => setPixVigenteEm(e.target.value)}
+                  />
+                </Campo>
+                <Campo label="Percentual (%)" dica="Ex.: 1,45 para 1,45% sobre o valor enviado.">
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    className={`${CLASSE_CAMPO} numeros text-right`}
+                    placeholder="1,45"
+                    value={pixPercentual}
+                    onChange={(e) => setPixPercentual(e.target.value)}
+                  />
+                </Campo>
+                <Campo label="Tarifa mínima (R$)" dica="Piso por transação. Ex.: 1,75.">
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    className={`${CLASSE_CAMPO} numeros text-right`}
+                    placeholder="1,75"
+                    value={pixMinimo}
+                    onChange={(e) => setPixMinimo(e.target.value)}
+                  />
+                </Campo>
+                <Campo label="Tarifa máxima (R$)" dica="Teto por transação. Ex.: 9,80.">
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    className={`${CLASSE_CAMPO} numeros text-right`}
+                    placeholder="9,80"
+                    value={pixMaximo}
+                    onChange={(e) => setPixMaximo(e.target.value)}
+                  />
+                </Campo>
+              </div>
+
+              {pixHistorico.length > 0 && (
+                <div className="border-t border-borda/40 pt-2">
+                  <p className="mb-1 text-xs font-medium text-suave">Histórico de tarifas</p>
+                  <ul className="flex flex-col gap-1">
+                    {pixHistorico.map((v) => (
+                      <li key={v.id} className="flex items-center justify-between text-xs text-suave">
+                        <span className="numeros">{formatarDataBr(v.validoAPartirDe)}</span>
+                        <span className="numeros">
+                          {centesimosParaInput(v.percentualBp)}% · mín R$ {centesimosParaInput(v.minimoCentavos)} · máx R$ {centesimosParaInput(v.maximoCentavos)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="mt-2 flex justify-end gap-2">
             <button type="button" className="btn btn-suave px-4 py-2 text-sm" onClick={() => setAberto(false)}>
               Cancelar
@@ -377,7 +501,29 @@ export function Contas() {
   );
 }
 
+/* ────────────────── Helpers ────────────────── */
+
+/** Converte um valor em centésimos (centavos ou basis points) para "1,45". */
+function centesimosParaInput(valor: number): string {
+  return (valor / 100).toFixed(2).replace('.', ',');
+}
+
+/** "2026-06-28" → "28/06/2026". */
+function formatarDataBr(iso: string): string {
+  const [ano, mes, dia] = iso.split('-');
+  return `${dia}/${mes}/${ano}`;
+}
+
 /* ────────────────── Ícones inline ────────────────── */
+
+function IconePix() {
+  return (
+    <svg className="mt-0.5 h-4 w-4 shrink-0 text-ambar" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 3.75l3.182 3.182a3 3 0 010 4.243L12 14.357 8.818 11.175a3 3 0 010-4.243L12 3.75z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M7.06 8.69L4.629 11.12a3 3 0 000 4.243L7.06 17.79m9.88-9.1l2.431 2.43a3 3 0 010 4.243l-2.43 2.43M12 14.357v5.893" />
+    </svg>
+  );
+}
 
 function IconePlus() {
   return (

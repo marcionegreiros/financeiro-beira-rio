@@ -8,3 +8,5 @@ export * from './caixa';
 export * from './capital';
 export * from './tanque';
 export * from './precos';
+export * from './taxaCartao';
+export * from './taxaPixConta';

@@ -14,6 +14,7 @@ interface Props<T> {
   chaveLinha: (item: T) => string;
   carregando?: boolean;
   vazio?: ReactNode;
+  rodape?: ReactNode;
 }
 
 function alinhamento(a?: 'left' | 'right' | 'center') {
@@ -21,7 +22,7 @@ function alinhamento(a?: 'left' | 'right' | 'center') {
 }
 
 /** Tabela de dados reutilizável — cabeçalho sticky, hover de linha, estados de carregamento/vazio. */
-export function DataTable<T>({ colunas, dados, chaveLinha, carregando, vazio }: Props<T>) {
+export function DataTable<T>({ colunas, dados, chaveLinha, carregando, vazio, rodape }: Props<T>) {
   return (
     <div className="cartao overflow-hidden">
       <div className="overflow-x-auto">
@@ -67,6 +68,9 @@ export function DataTable<T>({ colunas, dados, chaveLinha, carregando, vazio }: 
                 </tr>
               ))}
           </tbody>
+          {!carregando && dados.length > 0 && rodape && (
+            <tfoot>{rodape}</tfoot>
+          )}
         </table>
       </div>
     </div>

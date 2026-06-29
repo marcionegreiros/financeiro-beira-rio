@@ -450,7 +450,7 @@ export function Shell({ usuario }: { usuario: UsuarioAtual }) {
               {tela === 'despesas' && podeLancarDespesa && <Despesas usuario={usuario} />}
               {tela === 'transferencias' && (podeTransferir || podeGerenciarContas) && (
                 <ContasETransferencias
-                  usuarioId={usuario.id}
+                  usuario={usuario}
                   podeTransferir={podeTransferir}
                   podeGerenciarContas={podeGerenciarContas}
                 />

@@ -8,6 +8,7 @@ import {
   gerarFechamentoFolha,
   listarContasCompletas,
   pagarFechamentoFolha,
+  removerPagamentoFolha,
   listarMovimentos,
   removerDespesa,
   removerFuncionario,
@@ -20,6 +21,7 @@ import {
 import { aReceberFolha } from '../../domain/folha';
 import { uuidv7 } from '../../lib/uuidv7';
 import { parseReais, formatReais, asCentavos, negar, type Centavos } from '../../lib/money';
+import { FORMAS_PAGAMENTO, formasParaConta, formaCoerente, formaPadraoConta } from '../../lib/formasPagamento';
 import { agoraManausISO } from '../../lib/datas';
 import { formatarDataHora } from '../../lib/formato';
 import { useToast } from '../../components/ui/Toast';
@@ -60,11 +62,14 @@ export function Folha({ usuarioId }: { usuarioId: string }) {
 
   // Modal vale
   const [modalValeAberto, setModalValeAberto] = useState(false);
+  const [valeIdEdit, setValeIdEdit] = useState<string | null>(null);
   const [valeFunc, setValeFunc] = useState<Funcionario | null>(null);
   const [funcionarioIdVale, setFuncionarioIdVale] = useState('');
   const [valeStr, setValeStr] = useState('');
   const [valeDesc, setValeDesc] = useState('');
+  const [valeData, setValeData] = useState(() => agoraManausISO().slice(0, 16));
   const [contaId, setContaId] = useState('');
+  const [valeForma, setValeForma] = useState('dinheiro');
   const [lancandoVale, setLancandoVale] = useState(false);
 
   // Modal pagar folha
@@ -179,11 +184,27 @@ export function Folha({ usuarioId }: { usuarioId: string }) {
   }
 
   function abrirVale(f: Funcionario | null) {
+    setValeIdEdit(null);
     setValeFunc(f);
-    setFuncionarioIdVale(f?.id ?? '');
+    setFuncionarioIdVale(f ? f.id : '');
     setValeStr('');
     setValeDesc('');
+    setValeData(agoraManausISO().slice(0, 16));
     setContaId(caixaPadrao?.id ?? '');
+    setValeForma('dinheiro');
+    setModalValeAberto(true);
+  }
+
+  function editarVale(m: MovimentoLista) {
+    setValeIdEdit(m.id);
+    const f = funcionarios.find((x) => x.id === m.funcionarioId) || null;
+    setValeFunc(f);
+    setFuncionarioIdVale(m.funcionarioId ?? '');
+    setValeStr(formatReais(m.valorCentavos < 0n ? negar(m.valorCentavos) : m.valorCentavos).replace('R$ ', ''));
+    setValeData(m.dataHora.slice(0, 16));
+    setValeDesc(m.descricao ?? '');
+    setContaId(m.contaId ?? '');
+    setValeForma(formaCoerente(m.formaPagamento ?? 'dinheiro', contas.find((c) => c.id === m.contaId)?.tipo));
     setModalValeAberto(true);
   }
 
@@ -205,8 +226,8 @@ export function Folha({ usuarioId }: { usuarioId: string }) {
     setLancandoVale(true);
     try {
       const fNome = funcionarios.find((x) => x.id === funcionarioIdVale)?.nome ?? 'Funcionário';
-      await lancarVale(funcionarioIdVale, contaId, valor, agoraManausISO(), valeDesc.trim() || `Vale — ${fNome}`, usuarioId);
-      toast.sucesso('Vale lançado (saiu do caixa).');
+      await lancarVale(valeIdEdit ?? uuidv7(), funcionarioIdVale, contaId, valor, `${valeData}:00-04:00`, valeDesc.trim() || `Vale — ${fNome}`, usuarioId, valeForma);
+      toast.sucesso('Vale salvo.');
       setModalValeAberto(false);
       await recarregar();
     } catch (e) {
@@ -220,7 +241,7 @@ export function Folha({ usuarioId }: { usuarioId: string }) {
   function abrirPagarFolha(l: FechamentoFolha) {
     setPagarFolha(l);
     setPagarContaId(caixaPadrao?.id ?? '');
-    setPagarForma('pix');
+    setPagarForma(formaPadraoConta(caixaPadrao?.tipo));
     setPagarData(agoraManausISO().slice(0, 16));
   }
 
@@ -255,6 +276,18 @@ export function Folha({ usuarioId }: { usuarioId: string }) {
     } catch (e) {
       console.error(e);
       toast.erro('Erro ao excluir o vale.');
+    }
+  }
+
+  async function aoExcluirPagamentoFolha(f: FechamentoFolha) {
+    if (!confirm('Deseja realmente excluir este pagamento? A folha voltará para o status Aberto.')) return;
+    try {
+      await removerPagamentoFolha(f.id, usuarioId);
+      toast.sucesso('Pagamento excluído. Folha reaberta.');
+      await recarregar();
+    } catch (e) {
+      console.error(e);
+      toast.erro('Erro ao excluir o pagamento.');
     }
   }
 
@@ -403,7 +436,7 @@ export function Folha({ usuarioId }: { usuarioId: string }) {
       titulo: '',
       alinhar: 'right',
       render: (l) => (
-        <div className="flex justify-end gap-1.5">
+        <div className="flex justify-end gap-1.5 items-center">
           {l.status === 'aberto' && (
             <button
               type="button"
@@ -414,9 +447,18 @@ export function Folha({ usuarioId }: { usuarioId: string }) {
             </button>
           )}
           {l.status === 'pago' && l.pagoEm && (
-            <span className="text-xs text-suave">
-              Pago em: {formatarDataHora(l.pagoEm)}
-            </span>
+            <>
+              <span className="text-xs text-suave">
+                Pago: {formatarDataHora(l.pagoEm)}
+              </span>
+              <button
+                type="button"
+                className="btn btn-suave px-2 py-1 text-xs text-negativo hover:bg-negativo/10 ml-2"
+                onClick={() => void aoExcluirPagamentoFolha(l)}
+              >
+                Excluir Pag.
+              </button>
+            </>
           )}
         </div>
       ),
@@ -459,13 +501,16 @@ export function Folha({ usuarioId }: { usuarioId: string }) {
       titulo: '',
       alinhar: 'right',
       render: (m) => (
-        <button
-          type="button"
-          className="btn btn-suave px-2 py-1 text-xs text-negativo hover:bg-negativo/10"
-          onClick={() => void aoExcluirVale(m.id)}
-        >
-          Excluir
-        </button>
+        <div className="flex justify-end gap-1.5">
+          <button type="button" className="btn btn-suave px-2 py-1 text-xs" onClick={() => editarVale(m)}>Editar</button>
+          <button
+            type="button"
+            className="btn btn-suave px-2 py-1 text-xs text-negativo hover:bg-negativo/10"
+            onClick={() => void aoExcluirVale(m.id)}
+          >
+            Excluir
+          </button>
+        </div>
       ),
     },
   ];
@@ -608,6 +653,9 @@ export function Folha({ usuarioId }: { usuarioId: string }) {
             </Campo>
           )}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Campo label="Data e Hora" obrigatorio>
+              <input type="datetime-local" className={CLASSE_CAMPO} value={valeData} onChange={(e) => setValeData(e.target.value)} />
+            </Campo>
             <Campo label="Valor (R$)" obrigatorio>
               <input
                 inputMode="decimal"
@@ -618,11 +666,33 @@ export function Folha({ usuarioId }: { usuarioId: string }) {
               />
             </Campo>
             <Campo label="Conta de origem" obrigatorio>
-              <select aria-label="Conta de origem" className={CLASSE_CAMPO} value={contaId} onChange={(e) => setContaId(e.target.value)}>
+              <select
+                aria-label="Conta de origem"
+                className={CLASSE_CAMPO}
+                value={contaId}
+                onChange={(e) => {
+                  const nova = e.target.value;
+                  setContaId(nova);
+                  const tipo = contas.find((c) => c.id === nova)?.tipo;
+                  setValeForma((prev) => formaCoerente(prev, tipo));
+                }}
+              >
                 <option value="">Selecione…</option>
                 {contas.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.nome} ({c.tipo})
+                  </option>
+                ))}
+              </select>
+            </Campo>
+            <Campo
+              label="Forma de pagamento"
+              dica="PIX de conta de banco com tarifa configurada gera a tarifa automática em Despesas."
+            >
+              <select aria-label="Forma de pagamento" className={CLASSE_CAMPO} value={valeForma} onChange={(e) => setValeForma(e.target.value)}>
+                {formasParaConta(contas.find((c) => c.id === contaId)?.tipo).map((k) => (
+                  <option key={k} value={k}>
+                    {FORMAS_PAGAMENTO[k]}
                   </option>
                 ))}
               </select>
@@ -730,7 +800,12 @@ export function Folha({ usuarioId }: { usuarioId: string }) {
                   aria-label="Conta de pagamento"
                   className={CLASSE_CAMPO}
                   value={pagarContaId}
-                  onChange={(e) => setPagarContaId(e.target.value)}
+                  onChange={(e) => {
+                    const nova = e.target.value;
+                    setPagarContaId(nova);
+                    const tipo = contas.find((c) => c.id === nova)?.tipo;
+                    setPagarForma((prev) => formaCoerente(prev, tipo));
+                  }}
                 >
                   <option value="">Selecione a conta...</option>
                   {contas.map((c) => (
@@ -748,10 +823,11 @@ export function Folha({ usuarioId }: { usuarioId: string }) {
                   value={pagarForma}
                   onChange={(e) => setPagarForma(e.target.value)}
                 >
-                  <option value="pix">PIX</option>
-                  <option value="dinheiro">Dinheiro</option>
-                  <option value="debito">Cartão Débito</option>
-                  <option value="credito">Cartão Crédito</option>
+                  {formasParaConta(contas.find((c) => c.id === pagarContaId)?.tipo).map((k) => (
+                    <option key={k} value={k}>
+                      {FORMAS_PAGAMENTO[k]}
+                    </option>
+                  ))}
                 </select>
               </Campo>
             </div>

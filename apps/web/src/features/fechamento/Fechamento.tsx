@@ -30,9 +30,11 @@ import {
   listarDespesasDoDia,
   removerDespesa,
   salvarClienteFiado,
+  listarContasCompletas,
   type FechamentoRecente,
   type FechamentoResumo,
   type DespesaDoDia,
+  type ContaCompleta,
 } from '../../data/repositorios';
 import { uuidv7 } from '../../lib/uuidv7';
 import { NovaDespesaModal, FORMAS_PAGAMENTO } from '../financeiro/NovaDespesaModal';
@@ -41,7 +43,7 @@ import { useToast } from '../../components/ui/Toast';
 import { Modal } from '../../components/ui/Modal';
 import { DataTable, type Coluna } from '../../components/ui/DataTable';
 import { PageHeader } from '../../components/ui/PageHeader';
-import { CLASSE_CAMPO } from '../../components/ui/Campo';
+import { Campo, CLASSE_CAMPO } from '../../components/ui/Campo';
 
 const ZERO = asCentavos(0n);
 
@@ -86,21 +88,57 @@ interface Props {
 export function Fechamento({ usuarioId, podeReabrir }: Props) {
   const isOnline = useOnlineStatus();
   const toast = useToast();
-  const [aba, setAba] = useState<'fechar' | 'historico'>('fechar');
+  const [aba, setAba] = useState<'fechar' | 'historico'>(() => {
+    const salva = localStorage.getItem('pontao_fechamento_aba');
+    return (salva === 'fechar' || salva === 'historico') ? salva : 'fechar';
+  });
   const [nonceRecarga, setNonceRecarga] = useState(0);
   const [historico, setHistorico] = useState<FechamentoResumo[]>([]);
   const [histCarregando, setHistCarregando] = useState(false);
-  const [histDe, setHistDe] = useState('');
-  const [histAte, setHistAte] = useState('');
-  const [histStatus, setHistStatus] = useState('');
+  const [histDe, setHistDe] = useState(() => localStorage.getItem('pontao_filtro_fechamento_de') ?? '');
+  const [histAte, setHistAte] = useState(() => localStorage.getItem('pontao_filtro_fechamento_ate') ?? '');
+  const [histStatus, setHistStatus] = useState(() => localStorage.getItem('pontao_filtro_fechamento_status') ?? '');
+
+  useEffect(() => {
+    localStorage.setItem('pontao_fechamento_aba', aba);
+  }, [aba]);
+
+  useEffect(() => {
+    localStorage.setItem('pontao_filtro_fechamento_de', histDe);
+  }, [histDe]);
+
+  useEffect(() => {
+    localStorage.setItem('pontao_filtro_fechamento_ate', histAte);
+  }, [histAte]);
+
+  useEffect(() => {
+    localStorage.setItem('pontao_filtro_fechamento_status', histStatus);
+  }, [histStatus]);
+
   const [reabrirAlvo, setReabrirAlvo] = useState<string | null>(null);
   const [motivoReabrir, setMotivoReabrir] = useState('');
   const [reabrindo, setReabrindo] = useState(false);
   const [recentes, setRecentes] = useState<FechamentoRecente[]>([]);
-  const [dataSelecionada, setDataSelecionada] = useState(hojeManaus());
+  const [dataSelecionada, setDataSelecionada] = useState(() => {
+    return localStorage.getItem('pontao_fechamento_data_selecionada') ?? hojeManaus();
+  });
+
+  useEffect(() => {
+    localStorage.setItem('pontao_fechamento_data_selecionada', dataSelecionada);
+  }, [dataSelecionada]);
 
   const [ctx, setCtx] = useState<ContextoFechamento | null>(null);
   const [erroCarga, setErroCarga] = useState<string | null>(null);
+  const [contas, setContas] = useState<ContaCompleta[]>([]);
+  const [destinoTransfId, setDestinoTransfId] = useState(() => {
+    const key = usuarioId ? `pontao_fechamento_destino_${usuarioId}` : 'pontao_fechamento_destino_default';
+    return localStorage.getItem(key) ?? '';
+  });
+
+  useEffect(() => {
+    const key = usuarioId ? `pontao_fechamento_destino_${usuarioId}` : 'pontao_fechamento_destino_default';
+    localStorage.setItem(key, destinoTransfId);
+  }, [destinoTransfId, usuarioId]);
 
   const [leituras, setLeituras] = useState<Record<string, string>>({});
   const [contagens, setContagens] = useState<Record<string, string>>({});
@@ -197,6 +235,11 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
   useEffect(() => {
     setRelatorio(null);
     setErroConfirmar(null);
+    
+    listarContasCompletas()
+      .then((c) => setContas(c.filter((x) => x.ativo)))
+      .catch((err) => console.error('Erro ao carregar contas:', err));
+
     carregarContexto(dataSelecionada)
       .then((contexto) => {
         setCtx(contexto);
@@ -370,7 +413,8 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
 
   async function recarregarDespesas() {
     try {
-      setDespesasDoDia(await listarDespesasDoDia(dataSelecionada));
+      const rawDespesas = await listarDespesasDoDia(dataSelecionada);
+      setDespesasDoDia(rawDespesas.filter((d) => d.contaId === ctx?.contaCaixaId));
     } catch (e) {
       console.error('Erro ao recarregar despesas do dia:', e);
     }
@@ -452,6 +496,12 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
       percentualBp: ctx.taxaCredito.percentualBp,
       taxaFixa: ctx.taxaCredito.fixa,
     });
+    // PIX via maquininha também tem taxa (PIX direto na chave é grátis → taxa 0).
+    const dCartaoPix = liquidoCartao({
+      bruto: pixC,
+      percentualBp: ctx.taxaPix.percentualBp,
+      taxaFixa: ctx.taxaPix.fixa,
+    });
 
     const esperado = dinheiroEsperado({
       vendaFisica,
@@ -468,6 +518,10 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
     const aDepositarBruto = subtrair(contadoC, ctx.trocoFixo);
     const aDepositar = aDepositarBruto < 0n ? ZERO : aDepositarBruto;
 
+    const totalDespesasGeral = somar(...despesasDoDia.map((d) => d.valor));
+    const saldoDoDia = subtrair(vendaFisica, totalDespesasGeral);
+    const totalNaoDinheiro = somar(pixC, debitoC, creditoC);
+
     return {
       bombas,
       produtos,
@@ -481,11 +535,15 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
       fiadoRecC,
       dCartaoDeb,
       dCartaoCred,
+      dCartaoPix,
       esperado,
       diferenca,
       cashSales,
       aDepositar,
       ind,
+      totalDespesasGeral,
+      saldoDoDia,
+      totalNaoDinheiro,
     };
   }, [
     ctx, leituras, contagens, entradasEstoque, vendasIndividuais, pix, debito, credito,
@@ -538,13 +596,17 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
             fiadoId: f.fiadoId || null,
           })),
         cashSales: calc.cashSales,
-        pix: calc.pixC,
+        pixNet: calc.dCartaoPix.liquido,
+        pixTaxa: calc.dCartaoPix.taxa,
         debitoNet: calc.dCartaoDeb.liquido,
         debitoTaxa: calc.dCartaoDeb.taxa,
         creditoNet: calc.dCartaoCred.liquido,
         creditoTaxa: calc.dCartaoCred.taxa,
         despesaIds: despesasDoDia.map((d) => d.id),
         diferenca: calc.diferenca,
+        aDepositar: calc.aDepositar,
+        transferenciaDestinoId: destinoTransfId || null,
+        transferenciaDestinoEhBanco: contas.find(c => c.id === destinoTransfId)?.tipo === 'banco',
       };
       await confirmarFechamento(resumo);
       setRelatorio({
@@ -794,6 +856,11 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
       </section>
 
       {/* Produtos por contagem */}
+      {(() => {
+        // Coluna "Entrada" é só VISUALIZAÇÃO e só aparece quando houve entrada no dia
+        // (lançada em Produtos / notinha, por DATA). Não se edita aqui.
+        const mostrarColunaEntrada = calc.produtos.some((p) => p.ent > 0n);
+        return (
       <section className="cartao p-5">
         <h2 className="mb-3 font-display font-semibold text-claro">Produtos (contagem)</h2>
         <table className="w-full text-sm">
@@ -801,6 +868,7 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-suave">
               <th className="pb-2 font-medium">Produto</th>
               <th className="pb-2 text-right font-medium">Estoque anterior</th>
+              {mostrarColunaEntrada && <th className="pb-2 text-right font-medium">Entrada</th>}
               <th className="pb-2 text-right font-medium">Contagem agora</th>
               <th className="pb-2 text-right font-medium">Vendido</th>
               <th className="pb-2 text-right font-medium">Valor</th>
@@ -815,6 +883,11 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
                   <td className="numeros py-2 text-right text-claro/60">
                     {String(p.estoqueAnterior)}
                   </td>
+                  {mostrarColunaEntrada && (
+                    <td className="numeros py-2 text-right text-claro/60">
+                      {p.ent > 0n ? `+${String(p.ent)}` : '—'}
+                    </td>
+                  )}
                   <td className="py-2 text-right">
                     <input
                       ref={(el) => {
@@ -841,6 +914,8 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
           </tbody>
         </table>
       </section>
+        );
+      })()}
 
       {/* Produtos individuais (Venda Avulsa) */}
       {ctx.mostrarProdutosAvulsos && calc.ind.length > 0 && (
@@ -887,28 +962,20 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
         </section>
       )}
 
-      {/* Venda física ao vivo */}
-      <section className="cartao flex items-center justify-between p-5">
-        <span className="text-suave">Venda física do dia</span>
-        <span className="numeros text-2xl font-bold text-claro">{formatReais(calc.vendaFisica)}</span>
-      </section>
-
-      {/* Pagamentos */}
-      <section className="grid gap-4 cartao p-5 sm:grid-cols-3">
-        <h2 className="font-display font-semibold text-claro sm:col-span-3">
-          Pagamentos não-dinheiro
-        </h2>
-        <CampoMoeda rotulo="PIX" valor={pix} aoMudar={setPix} />
-        <CampoMoeda
-          rotulo={`Cartão débito (taxa ${formatReais(calc.dCartaoDeb.taxa)})`}
-          valor={debito}
-          aoMudar={setDebito}
-        />
-        <CampoMoeda
-          rotulo={`Cartão crédito (taxa ${formatReais(calc.dCartaoCred.taxa)})`}
-          valor={credito}
-          aoMudar={setCredito}
-        />
+      {/* Venda física e Saldo do Dia */}
+      <section className="cartao p-5 grid gap-4 sm:grid-cols-3">
+        <div className="flex flex-col">
+          <span className="text-xs font-semibold uppercase tracking-wide text-suave">Venda física do dia</span>
+          <span className="numeros text-2xl font-bold text-claro mt-1">{formatReais(calc.vendaFisica)}</span>
+        </div>
+        <div className="flex flex-col">
+          <span className="text-xs font-semibold uppercase tracking-wide text-negativo">Saídas (Despesas)</span>
+          <span className="numeros text-2xl font-bold text-negativo mt-1">-{formatReais(calc.totalDespesasGeral)}</span>
+        </div>
+        <div className="flex flex-col border-t border-borda pt-3 sm:border-t-0 sm:pt-0 sm:border-l sm:pl-4 border-borda/40">
+          <span className="text-xs font-semibold uppercase tracking-wide text-positivo">Saldo do dia</span>
+          <span className="numeros text-2xl font-extrabold text-positivo mt-1">{formatReais(calc.saldoDoDia)}</span>
+        </div>
       </section>
 
       {/* Despesas do dia (vinculadas à janela Despesas) */}
@@ -1189,6 +1256,37 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
         </section>
       )}
 
+      {/* Pagamentos */}
+      <section className="grid gap-4 cartao p-5 sm:grid-cols-3">
+        <h2 className="font-display font-semibold text-claro sm:col-span-3">
+          Pagamentos não-dinheiro
+        </h2>
+        <CampoMoeda
+          rotulo={
+            calc.dCartaoPix.taxa > 0n ? `PIX (taxa ${formatReais(calc.dCartaoPix.taxa)})` : 'PIX'
+          }
+          valor={pix}
+          aoMudar={setPix}
+          dica={`→ banco ${formatReais(calc.dCartaoPix.liquido)}`}
+        />
+        <CampoMoeda
+          rotulo={`Cartão débito (taxa ${formatReais(calc.dCartaoDeb.taxa)})`}
+          valor={debito}
+          aoMudar={setDebito}
+          dica={`→ banco ${formatReais(calc.dCartaoDeb.liquido)}`}
+        />
+        <CampoMoeda
+          rotulo={`Cartão crédito (taxa ${formatReais(calc.dCartaoCred.taxa)})`}
+          valor={credito}
+          aoMudar={setCredito}
+          dica={`→ banco ${formatReais(calc.dCartaoCred.liquido)}`}
+        />
+        <div className="sm:col-span-3 flex justify-between border-t border-borda/40 pt-3 text-sm font-semibold text-claro">
+          <span>Total não-dinheiro</span>
+          <span className="numeros text-base text-ambar font-bold">{formatReais(calc.totalNaoDinheiro)}</span>
+        </div>
+      </section>
+
       {/* Contagem do dinheiro + diferença + a depositar (reorganizado) */}
       <section className="grid gap-6 cartao p-5 sm:grid-cols-3">
         {/* Dinheiro contado (mais evidente/maior) */}
@@ -1231,6 +1329,72 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
         <div className="rounded-xl border border-positivo/50 bg-positivo/[0.06] p-4 flex flex-col justify-center shadow-sm shadow-positivo/5">
           <p className="text-xs font-semibold uppercase tracking-wide text-positivo">A depositar</p>
           <p className="numeros mt-1 text-3xl font-extrabold text-positivo">{formatReais(calc.aDepositar)}</p>
+        </div>
+      </section>
+
+      {/* Destinação e Transferência do Dinheiro */}
+      <section className="cartao p-5 flex flex-col gap-4">
+        <h2 className="font-display font-semibold text-claro">
+          Destinação e Transferência do Dinheiro
+        </h2>
+        <p className="text-xs text-suave">
+          As vendas e recebimentos em dinheiro entram automaticamente na conta padrão de dinheiro (<strong>Caixa Gaveta Dinheiro</strong>).
+        </p>
+
+        {calc.aDepositar > 0n ? (
+          <div className="grid gap-4 sm:grid-cols-2 border-t border-borda/40 pt-4">
+            <Campo label="Transferir valor restante (A depositar) para:" obrigatorio={false}>
+              <select
+                aria-label="Conta destino da transferência"
+                value={destinoTransfId}
+                onChange={(e) => setDestinoTransfId(e.target.value)}
+                className={CLASSE_CAMPO}
+              >
+                <option value="">Não transferir (deixar tudo no Caixa Gaveta Dinheiro)</option>
+                {contas.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.nome} ({c.tipo === 'banco' ? 'Banco' : 'Dinheiro'})
+                  </option>
+                ))}
+              </select>
+            </Campo>
+          </div>
+        ) : (
+          <p className="text-xs text-suave italic border-t border-borda/40 pt-3">
+            Nenhum saldo restante (A depositar) para transferir neste fechamento.
+          </p>
+        )}
+
+        {/* Resumo no final da destinação dos valores */}
+        <div className="mt-2 grid gap-4 grid-cols-1 sm:grid-cols-3 border-t border-borda/40 pt-4">
+          <div className="rounded-xl border border-borda/30 p-3 bg-fundo">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-suave">Ficando na Gaveta (Troco Fixo)</span>
+            <p className="numeros text-lg font-bold text-claro mt-1">
+              {formatReais(destinoTransfId ? ctx.trocoFixo : calc.contadoC)}
+            </p>
+          </div>
+          <div className="rounded-xl border border-borda/30 p-3 bg-fundo">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-suave">Indo para o Banco</span>
+            <p className="numeros text-lg font-bold text-claro mt-1">
+              {formatReais(
+                calc.aDepositar > 0n &&
+                contas.find(c => c.id === destinoTransfId)?.tipo === 'banco'
+                  ? calc.aDepositar
+                  : ZERO
+              )}
+            </p>
+          </div>
+          <div className="rounded-xl border border-borda/30 p-3 bg-fundo">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-suave">Indo para Outra Conta Dinheiro</span>
+            <p className="numeros text-lg font-bold text-claro mt-1">
+              {formatReais(
+                calc.aDepositar > 0n &&
+                contas.find(c => c.id === destinoTransfId)?.tipo === 'dinheiro'
+                  ? calc.aDepositar
+                  : ZERO
+              )}
+            </p>
+          </div>
         </div>
       </section>
 
@@ -1344,10 +1508,12 @@ function CampoMoeda({
   rotulo,
   valor,
   aoMudar,
+  dica,
 }: {
   rotulo: string;
   valor: string;
   aoMudar: (v: string) => void;
+  dica?: string;
 }) {
   return (
     <label className="flex flex-col gap-1.5 text-sm font-medium text-claro">
@@ -1368,6 +1534,7 @@ function CampoMoeda({
         }}
         className={`${CLASSE_CAMPO} numeros text-right`}
       />
+      {dica && <span className="text-[11px] font-normal text-suave">{dica}</span>}
     </label>
   );
 }

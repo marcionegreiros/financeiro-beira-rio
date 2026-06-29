@@ -1,4 +1,4 @@
-import { useState, useEffect, type FormEvent } from 'react';
+import { useState, useEffect, useRef, type FormEvent } from 'react';
 import {
   listarTanquesConfig,
   listarCombustiveis,
@@ -7,7 +7,12 @@ import {
   listarBombasTanque,
   salvarBomba,
   listarEntradasCombustivel,
-  adicionarEntradaCombustivel,
+  atualizarEntradaCombustivel,
+  registrarEntradaCombustivelComPreco,
+  ultimoCustoCombustivel,
+  listarNotasCombustivel,
+  listarItensNotaCombustivel,
+  type NotaResumo,
   listarMedicoesTanque,
   adicionarMedicaoTanque,
   listarPrecosCombustivel,
@@ -36,10 +41,23 @@ import { useToast } from '../../components/ui/Toast';
 import { Modal } from '../../components/ui/Modal';
 import { DataTable, type Coluna } from '../../components/ui/DataTable';
 import { Campo, CLASSE_CAMPO } from '../../components/ui/Campo';
+import { Combobox } from '../../components/ui/Combobox';
 import { hojeManaus, formatarDataBR } from '../../lib/datas';
-import { parseReais, formatReais, asCentavos } from '../../lib/money';
+import { parseReais, formatReais, asCentavos, type Centavos } from '../../lib/money';
 import { asMililitros, formatLitros } from '../../domain/tipos';
 import type { UsuarioAtual } from '../../data/usuario';
+
+/** Uma linha da notinha de carga (em memória até salvar). */
+interface NotaLinhaCombustivel {
+  entradaId?: string;
+  tanqueId: string;
+  nome: string;
+  combustivelId: string | null;
+  litros: number;
+  custo: Centavos;
+  precoVenda: Centavos | null;
+  precoVendaVigente: Centavos | null;
+}
 
 /** Litros (possivelmente fracionário, formato BR) → number. Espelha litrosParaMililitros. */
 function parseLitros(s: string): number {
@@ -98,9 +116,38 @@ export function Combustivel({ usuario, dataSelecionada }: CombustivelProps) {
   // Form: entrada de carga
   const [entradaLitrosStr, setEntradaLitrosStr] = useState('');
   const [entradaCustoStr, setEntradaCustoStr] = useState('');
+  const [entradaPrecoStr, setEntradaPrecoStr] = useState('');
   const [entradaData, setEntradaData] = useState('');
+  const [entradaEditandoId, setEntradaEditandoId] = useState<string | null>(null);
   const [entradasHistorico, setEntradasHistorico] = useState<EntradaCombustivel[]>([]);
   const [carregandoEntradas, setCarregandoEntradas] = useState(false);
+
+  // Notinha multi-tanque + edição
+  const [modalNotaAberto, setModalNotaAberto] = useState(false);
+  const [filtrosAbertos, setFiltrosAbertos] = useState(false);
+  const [menuAberto, setMenuAberto] = useState(false);
+  const gearRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function aoClicarFora(e: MouseEvent) {
+      if (gearRef.current && !gearRef.current.contains(e.target as Node)) {
+        setMenuAberto(false);
+      }
+    }
+    document.addEventListener('mousedown', aoClicarFora);
+    return () => document.removeEventListener('mousedown', aoClicarFora);
+  }, []);
+  const [notaData, setNotaData] = useState('');
+  const [notaLinhas, setNotaLinhas] = useState<NotaLinhaCombustivel[]>([]);
+  const [notaTanqueId, setNotaTanqueId] = useState('');
+  const [notaLitros, setNotaLitros] = useState('');
+  const [notaCusto, setNotaCusto] = useState('');
+  const [notaPreco, setNotaPreco] = useState('');
+  const [salvandoNota, setSalvandoNota] = useState(false);
+  const [notaId, setNotaId] = useState('');
+  const [notaModo, setNotaModo] = useState<'nova' | 'edicao'>('nova');
+  const [notaIdsOriginais, setNotaIdsOriginais] = useState<string[]>([]);
+  const [notasExistentes, setNotasExistentes] = useState<NotaResumo[]>([]);
 
   // Form: medição de régua
   const [medicaoLitrosStr, setMedicaoLitrosStr] = useState('');
@@ -185,10 +232,20 @@ export function Combustivel({ usuario, dataSelecionada }: CombustivelProps) {
 
 
 
+  function preencherReaisCampo(valor: Centavos | number | null, set: (s: string) => void) {
+    if (valor === null) { set(''); return; }
+    set((Number(valor) / 100).toFixed(2).replace('.', ','));
+  }
+
   async function abrirEntrada(t: TanqueConfig) {
     setSelecionado(t);
     setEntradaLitrosStr('');
+    setEntradaPrecoStr('');
+    setEntradaEditandoId(null);
     setEntradaCustoStr('');
+    void ultimoCustoCombustivel(t.id)
+      .then((ultimo) => preencherReaisCampo(ultimo, setEntradaCustoStr))
+      .catch(() => {});
     setEntradaData(dataSelecionada);
     setModalEntradaAberto(true);
     setCarregandoEntradas(true);
@@ -407,6 +464,41 @@ export function Combustivel({ usuario, dataSelecionada }: CombustivelProps) {
     }
   }
 
+  /**
+   * Guarda de caixa para mexer numa carga na `data`. Combustível NÃO afeta o caixa,
+   * então não há cascata — mas mantemos a trava retroativa por consistência.
+   */
+  async function guardaCargaNaData(data: string, acao: string): Promise<boolean> {
+    const status = await verificarFechamentoStatus(data);
+    if (status === 'travado') {
+      const pode = usuario?.permissoes.has('editar_lancamentos_retroativos') ?? false;
+      if (!pode) {
+        toast.erro(`O caixa do dia ${formatarDataBR(data)} já está encerrado. ${acao} exige um gerente.`);
+        return false;
+      }
+      if (!confirm(`O caixa do dia ${formatarDataBR(data)} já foi encerrado. Como gerente, deseja prosseguir?`)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function aoEditarEntradaCarga(e: EntradaCombustivel) {
+    setEntradaEditandoId(e.id);
+    setEntradaLitrosStr(String(e.litros).replace('.', ','));
+    preencherReaisCampo(e.custoLitroCentavos, setEntradaCustoStr);
+    setEntradaData(e.data);
+  }
+
+  function cancelarEdicaoCarga() {
+    setEntradaEditandoId(null);
+    setEntradaLitrosStr('');
+    if (selecionado) {
+      void ultimoCustoCombustivel(selecionado.id).then((u) => preencherReaisCampo(u, setEntradaCustoStr)).catch(() => {});
+    }
+    setEntradaData(dataSelecionada);
+  }
+
   async function aoAdicionarEntrada(e: FormEvent) {
     e.preventDefault();
     if (!selecionado) return;
@@ -415,11 +507,26 @@ export function Combustivel({ usuario, dataSelecionada }: CombustivelProps) {
     const custo = parseReais(entradaCustoStr);
     if (custo <= 0n) return toast.erro('Informe o custo por litro.');
     if (!entradaData) return toast.erro('Informe a data da entrada.');
+    if (!(await guardaCargaNaData(entradaData, entradaEditandoId ? 'Editar a carga' : 'Lançar a carga'))) return;
     setSalvando(true);
     try {
-      await adicionarEntradaCombustivel(uuidv7(), selecionado.id, litros, custo, entradaData);
-      toast.sucesso('Entrada de combustível registrada.');
+      if (entradaEditandoId) {
+        await atualizarEntradaCombustivel(entradaEditandoId, { litros, custoLitroCentavos: custo, data: entradaData });
+        toast.sucesso('Entrada atualizada.');
+      } else {
+        const preco = parseReais(entradaPrecoStr);
+        await registrarEntradaCombustivelComPreco({
+          tanqueId: selecionado.id,
+          litros,
+          custo,
+          data: entradaData,
+          combustivelId: selecionado.combustivelId,
+          precoVenda: preco > 0n ? preco : null,
+        });
+        toast.sucesso('Entrada de combustível registrada.');
+      }
       setEntradaLitrosStr('');
+      setEntradaEditandoId(null);
       setEntradasHistorico(await listarEntradasCombustivel(selecionado.id));
       await carregarTanques();
     } catch (err) {
@@ -427,6 +534,130 @@ export function Combustivel({ usuario, dataSelecionada }: CombustivelProps) {
       toast.erro('Erro ao registrar entrada.');
     } finally {
       setSalvando(false);
+    }
+  }
+
+  // ---- Notinha multi-tanque ----
+  function limparEditorLinhaNota() {
+    setNotaTanqueId('');
+    setNotaLitros('');
+    setNotaCusto('');
+    setNotaPreco('');
+  }
+
+  function novaNota() {
+    setNotaModo('nova');
+    setNotaId(uuidv7());
+    setNotaIdsOriginais([]);
+    setNotaLinhas([]);
+    limparEditorLinhaNota();
+    setNotaData(dataSelecionada);
+  }
+
+  async function abrirNota() {
+    novaNota();
+    setModalNotaAberto(true);
+    try {
+      setNotasExistentes(await listarNotasCombustivel());
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  async function aoEditarNotaExistente(id: string) {
+    if (!id) return;
+    try {
+      const { data, itens } = await listarItensNotaCombustivel(id);
+      setNotaModo('edicao');
+      setNotaId(id);
+      setNotaData(data);
+      setNotaIdsOriginais(itens.map((i) => i.entradaId));
+      setNotaLinhas(itens.map((i) => {
+        const tq = tanques.find((t) => t.id === i.tanqueId);
+        return {
+          entradaId: i.entradaId,
+          tanqueId: i.tanqueId,
+          nome: i.nome,
+          combustivelId: tq?.combustivelId ?? null,
+          litros: i.litros,
+          custo: i.custoLitroCentavos,
+          precoVenda: null,
+          precoVendaVigente: null,
+        };
+      }));
+      limparEditorLinhaNota();
+    } catch (err) {
+      console.error(err);
+      toast.erro('Falha ao carregar a nota.');
+    }
+  }
+
+  function aoSelecionarTanqueNota(tanqueId: string) {
+    setNotaTanqueId(tanqueId);
+    setNotaCusto('');
+    setNotaPreco('');
+    if (tanqueId) {
+      void ultimoCustoCombustivel(tanqueId).then((u) => preencherReaisCampo(u, setNotaCusto)).catch(() => {});
+    }
+  }
+
+  function adicionarLinhaNota() {
+    const t = tanques.find((x) => x.id === notaTanqueId);
+    if (!t) return toast.erro('Selecione um tanque.');
+    const litros = parseLitros(notaLitros);
+    if (isNaN(litros) || litros <= 0) return toast.erro('Informe os litros.');
+    const custo = parseReais(notaCusto);
+    if (custo <= 0n) return toast.erro('Informe o custo por litro.');
+    const preco = parseReais(notaPreco);
+    setNotaLinhas((linhas) => [...linhas, {
+      tanqueId: t.id,
+      nome: t.nome,
+      combustivelId: t.combustivelId,
+      litros,
+      custo,
+      precoVenda: preco > 0n ? preco : null,
+      precoVendaVigente: null,
+    }]);
+    limparEditorLinhaNota();
+  }
+
+  function removerLinhaNota(index: number) {
+    setNotaLinhas((linhas) => linhas.filter((_, i) => i !== index));
+  }
+
+  async function salvarNota() {
+    if (notaLinhas.length === 0) return toast.erro('Adicione ao menos um tanque à nota.');
+    if (!notaData) return toast.erro('Informe a data da nota.');
+    if (!(await guardaCargaNaData(notaData, 'Salvar a nota'))) return;
+    setSalvandoNota(true);
+    try {
+      const idsAtuais = new Set(notaLinhas.filter((l) => l.entradaId).map((l) => l.entradaId));
+      for (const idOrig of notaIdsOriginais) {
+        if (!idsAtuais.has(idOrig)) await removerEntradaCombustivel(idOrig);
+      }
+      for (const linha of notaLinhas) {
+        if (linha.entradaId) {
+          await atualizarEntradaCombustivel(linha.entradaId, { litros: linha.litros, custoLitroCentavos: linha.custo, data: notaData });
+        } else {
+          await registrarEntradaCombustivelComPreco({
+            tanqueId: linha.tanqueId,
+            litros: linha.litros,
+            custo: linha.custo,
+            data: notaData,
+            notaId,
+            combustivelId: linha.combustivelId,
+            precoVenda: linha.precoVenda,
+          });
+        }
+      }
+      toast.sucesso(notaModo === 'edicao' ? 'Nota atualizada.' : `Nota lançada: ${notaLinhas.length} ${notaLinhas.length === 1 ? 'item' : 'itens'}.`);
+      setModalNotaAberto(false);
+      await carregarTanques();
+    } catch (err) {
+      console.error(err);
+      toast.erro('Erro ao salvar a nota de carga.');
+    } finally {
+      setSalvandoNota(false);
     }
   }
 
@@ -544,7 +775,7 @@ export function Combustivel({ usuario, dataSelecionada }: CombustivelProps) {
           toast.erro('Esta entrada não pode ser excluída porque o caixa do dia ' + formatarDataBR(e.data) + ' já está encerrado. Solicite a um gerente.');
           return;
         }
-        if (!confirm('O caixa do dia ' + formatarDataBR(e.data) + ' já foi encerrado. Como gerente, deseja prosseguir com a exclusão desta entrada de combustível? Isso recalculará a cascata dos saldos.')) {
+        if (!confirm('O caixa do dia ' + formatarDataBR(e.data) + ' já foi encerrado. Como gerente, deseja prosseguir com a exclusão desta entrada de combustível? Isso ajusta o nível do tanque.')) {
           return;
         }
       } else {
@@ -736,30 +967,92 @@ export function Combustivel({ usuario, dataSelecionada }: CombustivelProps) {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between gap-4 flex-wrap pb-2 border-b border-borda/40">
-        <div className="flex items-center gap-4 flex-wrap">
-          <h2 className="text-lg font-bold text-claro">Tanques & Combustíveis</h2>
-          <select
-            value={filtroStatus}
-            onChange={(e) => setFiltroStatus(e.target.value as any)}
-            className="rounded border border-borda bg-transparent px-2 py-1 text-xs text-suave focus:ring-ambar focus:border-ambar outline-none"
+      <div className="flex items-center justify-between gap-4 flex-wrap pb-2 border-b border-borda/40 relative">
+        <h2 className="text-lg font-bold text-claro">Tanques & Combustíveis</h2>
+        
+        <div className="flex items-center gap-2">
+          {/* Botão de Filtro (Toggle) */}
+          <button
+            type="button"
+            onClick={() => setFiltrosAbertos(!filtrosAbertos)}
+            className={`p-2 rounded-xl border border-borda transition-all cursor-pointer relative ${
+              filtrosAbertos ? 'bg-claro/10 text-claro' : 'bg-claro/[0.02] text-suave hover:text-claro hover:bg-claro/[0.05]'
+            }`}
+            title="Mostrar/Ocultar Filtros"
           >
-            <option value="ativos" className="bg-ardosia">Apenas Ativos</option>
-            <option value="inativos" className="bg-ardosia">Apenas Inativos</option>
-            <option value="todos" className="bg-ardosia">Todos</option>
-          </select>
+            <IconeFiltro />
+            {filtroStatus !== 'ativos' && (
+              <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-positivo animate-pulse" />
+            )}
+          </button>
+
+          {/* Botão de Engrenagem (Ações no Click) */}
+          {podeGerenciar && (
+            <div className="relative" ref={gearRef}>
+              <button
+                type="button"
+                onClick={() => setMenuAberto(!menuAberto)}
+                className={`p-2 rounded-xl border border-borda transition-all cursor-pointer ${
+                  menuAberto ? 'bg-claro/10 text-claro' : 'bg-claro/[0.02] text-suave hover:text-claro hover:bg-claro/[0.05]'
+                }`}
+                title="Outras Ações"
+              >
+                <IconeEngrenagem />
+              </button>
+              
+              {menuAberto && (
+                <div className="absolute right-0 top-full mt-2 z-40 bg-elevado border border-borda rounded-2xl p-3 shadow-2xl w-48 text-left animate-surgir">
+                  <div className="flex flex-col gap-2">
+                    <button
+                      type="button"
+                      onClick={() => { abrirNovoTanque(); setMenuAberto(false); }}
+                      className="w-full btn btn-suave justify-start py-2 text-sm flex items-center gap-2"
+                    >
+                      <IconePlus /> Novo tanque
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { abrirCombustiveis(); setMenuAberto(false); }}
+                      className="w-full btn btn-suave justify-start py-2 text-sm"
+                    >
+                      Combustíveis
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Botão principal de Adicionar Carga */}
+          {podeGerenciar && (
+            <button
+              type="button"
+              onClick={() => void abrirNota()}
+              className="btn btn-primario px-4 py-2 text-sm flex items-center gap-2"
+            >
+              <IconePlus /> Adicionar carga
+            </button>
+          )}
         </div>
-        {podeGerenciar && (
-          <div className="flex items-center gap-2">
-            <button type="button" onClick={abrirCombustiveis} className="btn btn-suave px-4 py-2 text-sm">
-              Combustíveis
-            </button>
-            <button type="button" onClick={abrirNovoTanque} className="btn btn-primario px-4 py-2 text-sm">
-              <IconePlus /> Novo tanque
-            </button>
-          </div>
-        )}
       </div>
+
+      {/* Filtros em linha (Toggled by filtrosAbertos) */}
+      {filtrosAbertos && (
+        <div className="cartao flex flex-wrap items-end gap-3 p-4 animar-surgir">
+          <div className="min-w-[160px]">
+            <label className="mb-1 block text-xs font-medium text-suave">Status</label>
+            <select
+              value={filtroStatus}
+              onChange={(e) => setFiltroStatus(e.target.value as any)}
+              className={CLASSE_CAMPO}
+            >
+              <option value="ativos">Apenas Ativos</option>
+              <option value="inativos">Apenas Inativos</option>
+              <option value="todos">Todos</option>
+            </select>
+          </div>
+        </div>
+      )}
 
       <DataTable
         colunas={colunas}
@@ -953,8 +1246,13 @@ export function Combustivel({ usuario, dataSelecionada }: CombustivelProps) {
         larguraMax="max-w-2xl"
       >
         <div className="flex flex-col gap-6">
-          <form onSubmit={aoAdicionarEntrada} className="flex flex-col gap-4 rounded-xl border border-borda bg-claro/[0.02] p-4">
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-4 items-end">
+          <form onSubmit={aoAdicionarEntrada} className="flex flex-col gap-3 rounded-xl border border-borda bg-claro/[0.02] p-4">
+            <div className="max-w-[200px]">
+              <Campo label="Data da Entrada" obrigatorio>
+                <input type="date" aria-label="Data da entrada" className={CLASSE_CAMPO} value={entradaData} onChange={(e) => setEntradaData(e.target.value)} />
+              </Campo>
+            </div>
+            <div className={`grid grid-cols-2 gap-4 items-end ${entradaEditandoId ? 'sm:grid-cols-3' : 'sm:grid-cols-4'}`}>
               <Campo label="Litros" obrigatorio>
                 <input
                   className={`${CLASSE_CAMPO} numeros text-right`}
@@ -971,20 +1269,181 @@ export function Combustivel({ usuario, dataSelecionada }: CombustivelProps) {
                   onChange={(e) => setEntradaCustoStr(e.target.value)}
                 />
               </Campo>
-              <Campo label="Data" obrigatorio>
-                <input type="date" aria-label="Data da entrada" className={CLASSE_CAMPO} value={entradaData} onChange={(e) => setEntradaData(e.target.value)} />
-              </Campo>
+              {!entradaEditandoId && (
+                <Campo label="Preço venda/litro (R$)" dica="Atualiza o preço a partir desta data">
+                  <input
+                    className={CLASSE_CAMPO}
+                    placeholder="Ex.: 6,29"
+                    value={entradaPrecoStr}
+                    onChange={(e) => setEntradaPrecoStr(e.target.value)}
+                  />
+                </Campo>
+              )}
               <div>
                 <button type="submit" disabled={salvando} className="w-full btn btn-primario py-2 text-sm">
-                  {salvando ? 'Registrando…' : 'Registrar'}
+                  {salvando ? 'Salvando…' : entradaEditandoId ? 'Salvar alteração' : 'Registrar'}
                 </button>
               </div>
             </div>
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-suave">
+                {entradaEditandoId ? (
+                  <button type="button" onClick={cancelarEdicaoCarga} className="text-ambar hover:underline">
+                    Cancelar edição
+                  </button>
+                ) : (
+                  'Informe o preço de venda só se ele mudou nesta carga.'
+                )}
+              </span>
+              <span className="text-claro">
+                Total da carga:{' '}
+                <strong className="numeros text-positivo">
+                  {formatReais(asCentavos(BigInt(Math.round((parseLitros(entradaLitrosStr) || 0) * Number(parseReais(entradaCustoStr))))))}
+                </strong>
+              </span>
+            </div>
           </form>
-          <HistoricoEntradas carregando={carregandoEntradas} entradas={entradasHistorico} aoExcluir={aoExcluirEntrada} podeExcluir={podeGerenciar} />
+          <HistoricoEntradas carregando={carregandoEntradas} entradas={entradasHistorico} aoExcluir={aoExcluirEntrada} aoEditar={aoEditarEntradaCarga} podeExcluir={podeGerenciar} />
           <div className="flex justify-end border-t border-borda pt-4">
             <button type="button" className="btn btn-suave px-4 py-2 text-sm" onClick={() => setModalEntradaAberto(false)}>
               Fechar
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Modal: Notinha de carga (multi-tanque) */}
+      <Modal
+        aberto={modalNotaAberto}
+        aoFechar={() => setModalNotaAberto(false)}
+        titulo={notaModo === 'edicao' ? 'Editar nota de carga' : 'Adicionar carga (nota)'}
+        larguraMax="max-w-5xl"
+      >
+        <div className="flex flex-col gap-5">
+          <div className="grid grid-cols-1 gap-5 lg:grid-cols-[45%_55%] lg:items-start">
+            {/* Coluna Esquerda: Barra de Edição + Formulário de Carga */}
+            <div className="flex flex-col gap-5">
+              {/* Barra: nova nota / editar existente + data */}
+              <div className="flex flex-wrap items-end gap-3 rounded-xl border border-borda bg-claro/[0.02] p-3">
+                <div className="min-w-[220px] flex-1">
+                  <label className="mb-1 block text-xs font-medium text-suave">Editar nota existente</label>
+                  <select
+                    aria-label="Editar nota existente"
+                    className={CLASSE_CAMPO}
+                    value={notaModo === 'edicao' ? notaId : ''}
+                    onChange={(e) => void aoEditarNotaExistente(e.target.value)}
+                  >
+                    <option value="">— nova nota —</option>
+                    {notasExistentes.map((n) => (
+                      <option key={n.notaId} value={n.notaId}>
+                        {formatarDataBR(n.data)} · {n.itens} {n.itens === 1 ? 'item' : 'itens'} · {formatReais(n.totalCentavos)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="w-[160px]">
+                  <label className="mb-1 block text-xs font-medium text-suave">Data da nota</label>
+                  <input type="date" aria-label="Data da nota" className={CLASSE_CAMPO} value={notaData} onChange={(e) => setNotaData(e.target.value)} />
+                </div>
+                {notaModo === 'edicao' && (
+                  <button type="button" onClick={novaNota} className="btn btn-suave px-3 py-2 text-sm">Nova nota</button>
+                )}
+              </div>
+
+              {/* Editor de carga */}
+              <div className="flex flex-col gap-3 rounded-xl border border-borda bg-claro/[0.02] p-4">
+                <h4 className="text-sm font-bold text-claro">Adicionar tanque à nota</h4>
+                <div className="flex flex-col gap-3">
+                  <Campo label="Tanque" obrigatorio>
+                    <Combobox
+                      options={tanques.filter((t) => t.ativo).map((t) => ({
+                        id: t.id,
+                        label: `${t.nome} (${t.combustivelNome})`
+                      }))}
+                      value={notaTanqueId}
+                      onChange={(id) => aoSelecionarTanqueNota(id)}
+                      placeholder="Digite para buscar ou selecione..."
+                    />
+                  </Campo>
+
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 sm:items-end">
+                    <Campo label="Litros" obrigatorio>
+                      <input className={`${CLASSE_CAMPO} numeros text-right`} placeholder="0" value={notaLitros} onChange={(e) => setNotaLitros(e.target.value)} />
+                    </Campo>
+                    <Campo label="Custo/L (R$)" obrigatorio>
+                      <input className={`${CLASSE_CAMPO} numeros text-right`} placeholder="0,00" value={notaCusto} onChange={(e) => setNotaCusto(e.target.value)} />
+                    </Campo>
+                    <Campo label="Preço venda/L (R$)">
+                      <input className={`${CLASSE_CAMPO} numeros text-right`} placeholder="0,00" value={notaPreco} onChange={(e) => setNotaPreco(e.target.value)} />
+                    </Campo>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between mt-2">
+                  <span className="text-xs text-suave">
+                    Total da linha:{' '}
+                    <strong className="numeros text-claro">
+                      {formatReais(asCentavos(BigInt(Math.round((parseLitros(notaLitros) || 0) * Number(parseReais(notaCusto))))))}
+                    </strong>
+                  </span>
+                  <button type="button" onClick={adicionarLinhaNota} className="btn btn-primario px-4 py-2 text-sm">
+                    <IconePlus /> Adicionar
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Coluna Direita: Lista da nota (full width, cresce) */}
+            <div className="flex flex-col gap-2 h-full">
+              <h4 className="text-sm font-bold text-claro">Itens da nota</h4>
+              {notaLinhas.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-borda py-8 text-center text-xs text-suave">
+                  Nenhum item ainda. Use o formulário para adicionar tanques.
+                </div>
+              ) : (
+                <div className="overflow-y-auto rounded-xl border border-borda max-h-72">
+                  <table className="w-full text-left text-xs table-fixed">
+                    <thead className="bg-ardosia text-suave border-b border-borda sticky top-0 z-10">
+                      <tr>
+                        <th className="p-2 w-[40%] font-semibold">Tanque</th>
+                        <th className="p-2 w-[16%] text-right font-semibold">Litros</th>
+                        <th className="p-2 w-[18%] text-right font-semibold">Custo/L</th>
+                        <th className="p-2 w-[20%] text-right font-semibold">Total</th>
+                        <th className="p-2 w-[6%]"></th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-borda">
+                      {notaLinhas.map((l, i) => (
+                        <tr key={l.entradaId ?? `${l.tanqueId}-${i}`} className="hover:bg-claro/[0.01]">
+                          <td className="p-2 font-medium text-claro truncate">{l.nome}</td>
+                          <td className="p-2 numeros text-right text-claro">{fmtLitrosNum(l.litros)}</td>
+                          <td className="p-2 numeros text-right text-claro">{formatReais(l.custo)}</td>
+                          <td className="p-2 numeros text-right font-semibold text-positivo">
+                            {formatReais(asCentavos(BigInt(Math.round(l.litros * Number(l.custo)))))}
+                          </td>
+                          <td className="p-2 text-right">
+                            <button type="button" onClick={() => removerLinhaNota(i)} className="text-negativo hover:text-negativo/80 p-1" title="Remover item">
+                              <IconeLixeira />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              <div className="flex items-center justify-between rounded-xl border border-positivo/40 bg-positivo/[0.06] px-4 py-2">
+                <span className="text-sm font-semibold text-positivo">Total da nota</span>
+                <span className="numeros text-lg font-extrabold text-positivo">
+                  {formatReais(asCentavos(notaLinhas.reduce((acc, l) => acc + BigInt(Math.round(l.litros * Number(l.custo))), 0n)))}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2 border-t border-borda pt-4">
+            <button type="button" className="btn btn-suave px-4 py-2 text-sm" onClick={() => setModalNotaAberto(false)}>Cancelar</button>
+            <button type="button" onClick={() => void salvarNota()} disabled={salvandoNota || notaLinhas.length === 0} className="btn btn-primario px-4 py-2 text-sm">
+              {salvandoNota ? 'Salvando…' : notaModo === 'edicao' ? 'Salvar alterações' : 'Salvar nota'}
             </button>
           </div>
         </div>
@@ -1339,11 +1798,13 @@ function HistoricoEntradas({
   carregando,
   entradas,
   aoExcluir,
+  aoEditar,
   podeExcluir = false,
 }: {
   carregando: boolean;
   entradas: EntradaCombustivel[];
   aoExcluir?: (e: EntradaCombustivel) => void;
+  aoEditar?: (e: EntradaCombustivel) => void;
   podeExcluir?: boolean;
 }) {
   return (
@@ -1375,15 +1836,29 @@ function HistoricoEntradas({
                     <td className="p-3 numeros text-right text-claro">{formatReais(e.custoLitroCentavos)}</td>
                     <td className="p-3 numeros text-right font-semibold text-positivo">{formatReais(total)}</td>
                     <td className="p-3 text-right">
-                      {podeExcluir && aoExcluir && (
-                        <button
-                          type="button"
-                          onClick={() => void aoExcluir(e)}
-                          className="text-negativo hover:text-negativo/80 p-1"
-                          title="Excluir entrada"
-                        >
-                          <IconeLixeira />
-                        </button>
+                      {podeExcluir && (
+                        <div className="flex items-center justify-end gap-1">
+                          {aoEditar && (
+                            <button
+                              type="button"
+                              onClick={() => aoEditar(e)}
+                              className="text-suave hover:text-ambar p-1"
+                              title="Editar entrada"
+                            >
+                              <IconeEditar />
+                            </button>
+                          )}
+                          {aoExcluir && (
+                            <button
+                              type="button"
+                              onClick={() => void aoExcluir(e)}
+                              className="text-negativo hover:text-negativo/80 p-1"
+                              title="Excluir entrada"
+                            >
+                              <IconeLixeira />
+                            </button>
+                          )}
+                        </div>
                       )}
                     </td>
                   </tr>
@@ -1590,6 +2065,23 @@ function IconeLixeira() {
   return (
     <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+    </svg>
+  );
+}
+
+function IconeEngrenagem() {
+  return (
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+    </svg>
+  );
+}
+
+function IconeFiltro() {
+  return (
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 3c2.755 0 5.455.477 8 1.4V7a1 1 0 01-.293.707L14.414 13a1 1 0 00-.293.707v5.586a1 1 0 01-.293.707l-3.414 3.414A1 1 0 019 22.586V13.707a1 1 0 00-.293-.707L3.293 7.707A1 1 0 013 7V4.4C5.545 3.477 8.245 3 12 3z" />
     </svg>
   );
 }

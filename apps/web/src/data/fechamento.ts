@@ -14,6 +14,7 @@ import {
   quantidadeParaNumero,
 } from './conversao';
 import { precoVigenteEm, custoVigenteEm, type RegistroVigencia } from '../domain/precos';
+import { taxaCartaoVigenteEm, type RegistroTaxa } from '../domain/taxaCartao';
 import { hojeManaus, agoraManausISO, limitesDoDiaManaus } from '../lib/datas';
 import { uuidv7 } from '../lib/uuidv7';
 import { asCentavos, type Centavos, parseReais, somar } from '../lib/money';
@@ -50,6 +51,8 @@ export interface ContextoFechamento {
   trocoFixo: Centavos;
   taxaDebito: { percentualBp: bigint; fixa: Centavos };
   taxaCredito: { percentualBp: bigint; fixa: Centavos };
+  /** PIX via maquininha também tem taxa (PIX direto na chave é grátis). */
+  taxaPix: { percentualBp: bigint; fixa: Centavos };
   contaCaixaId: string | null;
   contaBancoId: string | null;
   /** Despesas lançadas no dia (janela Despesas ou aqui); as em dinheiro reduzem o esperado. */
@@ -69,11 +72,6 @@ export interface ContextoFechamento {
     observacao: string;
   } | undefined;
   mostrarProdutosAvulsos: boolean;
-}
-
-interface ConfigCartao {
-  percentual_bp?: number;
-  fixa_centavos?: number;
 }
 
 function centavosParaString(valor: number | bigint): string {
@@ -97,6 +95,7 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
     { data: configRaw, error: eCfg },
     { data: contasRaw, error: eC },
     { data: clientesRaw, error: eCli },
+    { data: taxasRaw, error: eTaxa },
     { data: anteriorRaw },
     fiadosEmAberto,
   ] = await Promise.all([
@@ -115,6 +114,7 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
     supabase.from('config').select('chave,valor_json'),
     supabase.from('conta').select('id,tipo,eh_destino_padrao_venda,ativo').eq('ativo', true),
     supabase.from('cliente_fiado').select('id,nome').order('nome'),
+    supabase.from('taxa_cartao').select('forma,percentual_bp,fixa_centavos,valido_a_partir_de'),
     supabase
       .from('fechamento')
       .select('id')
@@ -125,7 +125,7 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
       .maybeSingle(),
     listarFiadosEmAberto(),
   ]);
-  for (const e of [eB, ePC, eP, ePP, eCfg, eC, eCli]) if (e) throw e;
+  for (const e of [eB, ePC, eP, ePP, eCfg, eC, eCli, eTaxa]) if (e) throw e;
 
   const fechExistente = existeHoje as { id: string; status: 'aberto' | 'travado'; rascunho: any } | null;
   const jaExisteHoje = Boolean(fechExistente && fechExistente.status === 'travado');
@@ -186,8 +186,27 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
   );
   const trocoFixo = paraCentavos(Number(config.get('troco_fixo_centavos') ?? 0));
   const mostrarProdutosAvulsos = Boolean(config.get('fechamento_mostrar_avulsos') ?? false);
-  const taxaDebito = lerTaxa(config.get('taxa_cartao_debito') as ConfigCartao | undefined);
-  const taxaCredito = lerTaxa(config.get('taxa_cartao_credito') as ConfigCartao | undefined);
+
+  // Taxa de cartão é versionada por DATA (§3.6 + §5.6): usa a vigente na data do
+  // fechamento, nunca a de hoje. Histórico vazio → taxa zero (sem desconto).
+  const taxasPorForma = new Map<string, RegistroTaxa[]>();
+  for (const t of (taxasRaw ?? []) as Array<{
+    forma: string;
+    percentual_bp: number;
+    fixa_centavos: number;
+    valido_a_partir_de: string;
+  }>) {
+    const lista = taxasPorForma.get(t.forma) ?? [];
+    lista.push({
+      percentualBp: BigInt(t.percentual_bp),
+      fixa: paraCentavos(t.fixa_centavos),
+      validoApartirDe: t.valido_a_partir_de,
+    });
+    taxasPorForma.set(t.forma, lista);
+  }
+  const taxaDebito = taxaCartaoVigenteEm(taxasPorForma.get('debito') ?? [], data);
+  const taxaCredito = taxaCartaoVigenteEm(taxasPorForma.get('credito') ?? [], data);
+  const taxaPix = taxaCartaoVigenteEm(taxasPorForma.get('pix') ?? [], data);
 
   const contas = (contasRaw ?? []) as Array<{
     id: string;
@@ -205,10 +224,11 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
 
   // Despesas e entradas do dia são fonte por DATA (independem de já haver
   // fechamento), então o que foi lançado na janela Despesas / Produtos aparece aqui.
-  const [{ data: entradasDiaRaw }, despesasDoDia] = await Promise.all([
+  const [{ data: entradasDiaRaw }, despesasDoDiaRaw] = await Promise.all([
     supabase.from('entrada_mercadoria').select('produto_id, quantidade').eq('data', data),
     listarDespesasDoDia(data),
   ]);
+  const despesasDoDia = despesasDoDiaRaw.filter((d) => d.contaId === contaCaixaId);
   const entradasDoDia: Record<string, string> = {};
   {
     const soma = new Map<string, number>();
@@ -285,6 +305,7 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
 
   let debitoTaxa = 0n;
   let creditoTaxa = 0n;
+  let pixTaxa = 0n;
   let oldCashSales = 0n;
   let oldDiferenca = 0n;
   let recebimentosFiadoDinheiro = 0n;
@@ -297,7 +318,8 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
       if (m.forma_pagamento === 'dinheiro') oldCashSales = BigInt(m.valor_centavos);
     } else if (m.tipo === 'taxa_cartao') {
       if (m.descricao?.includes('débito')) debitoTaxa = -BigInt(m.valor_centavos);
-      if (m.descricao?.includes('crédito')) creditoTaxa = -BigInt(m.valor_centavos);
+      else if (m.descricao?.includes('crédito')) creditoTaxa = -BigInt(m.valor_centavos);
+      else if (m.descricao?.includes('PIX')) pixTaxa = -BigInt(m.valor_centavos);
     } else if (m.tipo === 'recebimento_fiado') {
       recebimentosFiadoDinheiro += BigInt(m.valor_centavos);
     } else if (m.tipo === 'diferenca_caixa') {
@@ -305,9 +327,12 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
     }
   }
 
-  // Reconstruct card gross
-  if (debito) debito = centavosParaString(Number(parseReais(debito) + debitoTaxa));
-  if (credito) credito = centavosParaString(Number(parseReais(credito) + creditoTaxa));
+  // Se for fechamento antigo (confirmado antes de 28/06/2026), reconstrói o BRUTO somando a taxa
+  if (data < '2026-06-28') {
+    if (debito && debitoTaxa > 0n) debito = centavosParaString(Number(parseReais(debito) + debitoTaxa));
+    if (credito && creditoTaxa > 0n) credito = centavosParaString(Number(parseReais(credito) + creditoTaxa));
+    if (pix && pixTaxa > 0n) pix = centavosParaString(Number(parseReais(pix) + pixTaxa));
+  }
 
   const fiadosConcedidos = fSalvos.map((f) => ({
     id: f.id,
@@ -390,6 +415,7 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
     trocoFixo,
     taxaDebito,
     taxaCredito,
+    taxaPix,
     contaCaixaId,
     contaBancoId,
     despesasDoDia,
@@ -432,13 +458,6 @@ function agruparPrecos(
   return mapa;
 }
 
-function lerTaxa(cfg: ConfigCartao | undefined): { percentualBp: bigint; fixa: Centavos } {
-  return {
-    percentualBp: BigInt(Math.round(cfg?.percentual_bp ?? 0)),
-    fixa: paraCentavos(cfg?.fixa_centavos ?? 0),
-  };
-}
-
 // ---- Persistência -------------------------------------------------------------
 
 export interface ResumoConfirmacao {
@@ -455,7 +474,8 @@ export interface ResumoConfirmacao {
   fiadosConcedidos: { clienteId: string; valor: Centavos }[];
   fiadosRecebidos: { clienteId: string; valor: Centavos }[];
   cashSales: Centavos;
-  pix: Centavos;
+  pixNet: Centavos;
+  pixTaxa: Centavos;
   debitoNet: Centavos;
   debitoTaxa: Centavos;
   creditoNet: Centavos;
@@ -463,6 +483,9 @@ export interface ResumoConfirmacao {
   /** IDs das despesas do dia a ligar a este fechamento (auditoria + cascata). */
   despesaIds: string[];
   diferenca: Centavos;
+  aDepositar?: Centavos;
+  transferenciaDestinoId?: string | null;
+  transferenciaDestinoEhBanco?: boolean;
 }
 
 interface MovimentoInsert {
@@ -502,6 +525,21 @@ export async function salvarRascunhoFechamento(
   if (error) throw error;
 }
 
+/**
+ * Tipos de movimento GERADOS pelo motor do fechamento (derivados). São os únicos
+ * que podem ser apagados ao reconfirmar/reabrir. Despesa, vale e pró-labore são
+ * eventos próprios do dia (lançados à mão) e NUNCA são apagados aqui — apenas
+ * (des)vinculados ao fechamento.
+ */
+const MOVS_GERADOS_FECHAMENTO = [
+  'recebimento_venda',
+  'taxa_cartao',
+  'diferenca_caixa',
+  'recebimento_fiado',
+  'transferencia',
+  'deposito',
+] as const;
+
 export async function confirmarFechamento(r: ResumoConfirmacao): Promise<string> {
   const agora = agoraManausISO();
 
@@ -530,17 +568,17 @@ export async function confirmarFechamento(r: ResumoConfirmacao): Promise<string>
       .eq('id', fechamentoId);
     if (eFech) throw eFech;
 
-    // Delete existing child records before re-inserting. As despesas do dia são
-    // eventos próprios (lançados na janela Despesas ou aqui) — NÃO as apagamos;
-    // só removemos os movimentos que o motor do fechamento gera (venda, taxa,
-    // diferença, recebimento de fiado).
+    // Delete existing child records before re-inserting. As despesas/vales/pró-labores
+    // do dia são eventos próprios (lançados na janela Despesas ou aqui) — NÃO os
+    // apagamos; só removemos os movimentos que o motor do fechamento gera (venda,
+    // taxa, diferença, recebimento de fiado, transferência/depósito).
     const [{ error: eDelC }, { error: eDelL }, { error: eDelM }, { error: eDelVI }, { error: eDelEnt }, { error: eDelFia }] = await Promise.all([
       supabase.from('contagem_produto').delete().eq('fechamento_id', fechamentoId),
       supabase.from('leitura_bomba').delete().eq('fechamento_id', fechamentoId),
       supabase.from('venda_avulsa').delete().eq('fechamento_id', fechamentoId),
       supabase.from('entrada_mercadoria').delete().eq('fechamento_id', fechamentoId),
       supabase.from('fiado').delete().or(`fechamento_id.eq.${fechamentoId},and(data.eq.${r.data},fechamento_id.is.null)`),
-      supabase.from('movimento').delete().eq('fechamento_id', fechamentoId).neq('tipo', 'despesa'),
+      supabase.from('movimento').delete().eq('fechamento_id', fechamentoId).in('tipo', MOVS_GERADOS_FECHAMENTO),
     ]);
     if (eDelC) throw eDelC;
     if (eDelL) throw eDelL;
@@ -670,18 +708,25 @@ export async function confirmarFechamento(r: ResumoConfirmacao): Promise<string>
       valor_centavos: centavosParaNumero(r.cashSales),
       forma_pagamento: 'dinheiro',
     });
-  if (r.pix !== 0n && banco)
+  if (r.pixNet !== 0n && banco)
     add({
       tipo: 'recebimento_venda',
       conta_id: banco,
-      valor_centavos: centavosParaNumero(r.pix),
+      valor_centavos: centavosParaNumero(somar(r.pixNet, r.pixTaxa)),
       forma_pagamento: 'pix',
+    });
+  if (r.pixTaxa !== 0n && banco)
+    add({
+      tipo: 'taxa_cartao',
+      conta_id: banco,
+      valor_centavos: -centavosParaNumero(r.pixTaxa),
+      descricao: 'Taxa de cartão (PIX)',
     });
   if (r.debitoNet !== 0n && banco)
     add({
       tipo: 'recebimento_venda',
       conta_id: banco,
-      valor_centavos: centavosParaNumero(r.debitoNet),
+      valor_centavos: centavosParaNumero(somar(r.debitoNet, r.debitoTaxa)),
       forma_pagamento: 'debito',
     });
   if (r.debitoTaxa !== 0n && banco)
@@ -695,7 +740,7 @@ export async function confirmarFechamento(r: ResumoConfirmacao): Promise<string>
     add({
       tipo: 'recebimento_venda',
       conta_id: banco,
-      valor_centavos: centavosParaNumero(r.creditoNet),
+      valor_centavos: centavosParaNumero(somar(r.creditoNet, r.creditoTaxa)),
       forma_pagamento: 'credito',
     });
   if (r.creditoTaxa !== 0n && banco)
@@ -714,6 +759,31 @@ export async function confirmarFechamento(r: ResumoConfirmacao): Promise<string>
       valor_centavos: centavosParaNumero(r.diferenca),
       descricao: 'Diferença de caixa',
     });
+
+  if (r.aDepositar && r.aDepositar > 0n && r.transferenciaDestinoId) {
+    const tipoTransf = r.transferenciaDestinoEhBanco ? 'deposito' : 'transferencia';
+    const descTransf = r.transferenciaDestinoEhBanco ? 'Depósito (Fechamento)' : 'Transferência (Fechamento)';
+    
+    // Leg 1: Saída do Caixa Físico (Gaveta)
+    add({
+      tipo: tipoTransf,
+      conta_id: r.contaCaixaId,
+      valor_centavos: -centavosParaNumero(r.aDepositar),
+      contraparte_conta_id: r.transferenciaDestinoId,
+      descricao: descTransf,
+      forma_pagamento: 'dinheiro',
+    });
+
+    // Leg 2: Entrada no destino (Banco ou Outro Caixa Dinheiro)
+    add({
+      tipo: tipoTransf,
+      conta_id: r.transferenciaDestinoId,
+      valor_centavos: centavosParaNumero(r.aDepositar),
+      contraparte_conta_id: r.contaCaixaId,
+      descricao: descTransf,
+      forma_pagamento: 'dinheiro',
+    });
+  }
   // Process received fiados (payments)
   const fiadosRecebidosUpdates: Promise<any>[] = [];
   for (const f of r.fiadosRecebidos) {
@@ -818,10 +888,93 @@ export async function reabrirFechamento(
     .single();
   if (eF || !fech) throw new Error('Fechamento não encontrado.');
 
-  // Set status back to 'aberto' so it can be edited
+  // 1. Fetch current data associated with the closure before deleting movements
+  const [rC, rL, rV, rF, rM] = await Promise.all([
+    supabase.from('contagem_produto').select('produto_id, quantidade').eq('fechamento_id', fechamentoId),
+    supabase.from('leitura_bomba').select('bomba_id, leitura').eq('fechamento_id', fechamentoId),
+    supabase.from('venda_avulsa').select('produto_id, quantidade').eq('fechamento_id', fechamentoId),
+    supabase.from('fiado').select('id, cliente_id, valor_centavos, vencimento').eq('fechamento_id', fechamentoId),
+    supabase.from('movimento').select('tipo, valor_centavos, forma_pagamento, fiado_id, socio_id, descricao').eq('fechamento_id', fechamentoId),
+  ]);
+
+  const contagens: Record<string, string> = {};
+  const leituras: Record<string, string> = {};
+  const vendasIndividuais: Record<string, string> = {};
+  let pix = '';
+  let debito = '';
+  let credito = '';
+  let contado = '';
+  const observacao = fech.observacao || '';
+
+  for (const c of rC.data ?? []) contagens[c.produto_id] = String(c.quantidade).replace('.', ',');
+  for (const l of rL.data ?? []) leituras[l.bomba_id] = String(l.leitura).replace('.', ',');
+  for (const v of rV.data ?? []) vendasIndividuais[v.produto_id] = String(v.quantidade).replace('.', ',');
+
+
+  let oldCashSales = 0n;
+  let oldDiferenca = 0n;
+  let recebimentosFiadoDinheiro = 0n;
+
+  const mSalvos = rM.data ?? [];
+  const fiadosRecebidos: any[] = [];
+
+  for (const m of mSalvos) {
+    if (m.tipo === 'recebimento_venda') {
+      if (m.forma_pagamento === 'pix') pix = centavosParaString(m.valor_centavos);
+      if (m.forma_pagamento === 'debito') debito = centavosParaString(m.valor_centavos);
+      if (m.forma_pagamento === 'credito') credito = centavosParaString(m.valor_centavos);
+      if (m.forma_pagamento === 'dinheiro') oldCashSales = BigInt(m.valor_centavos);
+    } else if (m.tipo === 'taxa_cartao') {
+      // Ignora, não precisamos somar a taxa de volta.
+    } else if (m.tipo === 'recebimento_fiado') {
+      recebimentosFiadoDinheiro += BigInt(m.valor_centavos);
+      fiadosRecebidos.push({
+        clienteId: m.socio_id || '',
+        valor: centavosParaString(m.valor_centavos),
+        fiadoId: m.fiado_id,
+      });
+    } else if (m.tipo === 'diferenca_caixa') {
+      oldDiferenca = BigInt(m.valor_centavos);
+    }
+  }
+
+  // O movimento de recebimento_venda já guarda o BRUTO digitado pelo usuário.
+  // Não precisamos mais somar a taxa de volta.
+  let despesasDinheiroDia = 0n;
+  for (const m of mSalvos) {
+    if (m.tipo === 'despesa' && m.forma_pagamento === 'dinheiro') {
+      despesasDinheiroDia += BigInt(Math.abs(m.valor_centavos));
+    }
+  }
+
+  const esperado = oldCashSales - despesasDinheiroDia + recebimentosFiadoDinheiro + BigInt(fech.troco_fixo_centavos || 0);
+  const contadoVal = esperado + oldDiferenca;
+  contado = centavosParaString(contadoVal);
+
+  const fiadosConcedidos = (rF.data ?? []).map((f) => ({
+    id: f.id,
+    clienteId: f.cliente_id,
+    valor: centavosParaString(f.valor_centavos),
+    vencimento: f.vencimento,
+  }));
+
+  const rascunho = {
+    leituras,
+    contagens,
+    vendasIndividuais,
+    pix,
+    debito,
+    credito,
+    fiadosConcedidos,
+    fiadosRecebidos,
+    contado,
+    observacao,
+  };
+
+  // Set status back to 'aberto' so it can be edited, and write the draft state
   const { error: eUp } = await supabase
     .from('fechamento')
-    .update({ status: 'aberto', travado_em: null })
+    .update({ status: 'aberto', travado_em: null, rascunho })
     .eq('id', fechamentoId);
   if (eUp) throw eUp;
 
@@ -844,8 +997,23 @@ export async function reabrirFechamento(
     if (eRestore) throw eRestore;
   }
 
-  const { error: eM } = await supabase.from('movimento').delete().eq('fechamento_id', fechamentoId);
+  // Apaga só os movimentos GERADOS pelo fechamento (venda, taxa, diferença,
+  // recebimento de fiado, transferência/depósito). As despesas/vales/pró-labores
+  // do dia são eventos próprios: NÃO os apagamos — apenas desvinculamos
+  // (fechamento_id = null). Como `listarDespesasDoDia` busca por DATA, eles
+  // reaparecem sozinhos no fechamento reaberto (o gerente não redigita).
+  const { error: eM } = await supabase
+    .from('movimento')
+    .delete()
+    .eq('fechamento_id', fechamentoId)
+    .in('tipo', MOVS_GERADOS_FECHAMENTO);
   if (eM) throw eM;
+
+  const { error: eUnlink } = await supabase
+    .from('movimento')
+    .update({ fechamento_id: null })
+    .eq('fechamento_id', fechamentoId);
+  if (eUnlink) throw eUnlink;
 
   const { error: eFi } = await supabase.from('fiado').delete().eq('fechamento_id', fechamentoId);
   if (eFi) throw eFi;
@@ -864,13 +1032,21 @@ export async function reabrirFechamento(
   if (eAudit) throw eAudit;
 }
 
-export async function recalcularCascata(dataInicial: string): Promise<void> {
-  const { data: fechamentos, error: eFechs } = await supabase
+/**
+ * Recalcula os fechamentos travados a partir de uma data. Por padrão recomputa só
+ * os dias POSTERIORES a `dataInicial` (uso do confirmar, que já computou o próprio
+ * dia). Com `inclusivo = true` recomputa também o dia `dataInicial` — usado quando
+ * um evento por DATA (ex.: entrada de mercadoria) muda num dia já travado.
+ */
+export async function recalcularCascata(dataInicial: string, inclusivo = false): Promise<void> {
+  const filtro = supabase
     .from('fechamento')
     .select('id, data, troco_fixo_centavos, responsavel_id, observacao')
-    .gt('data', dataInicial)
     .eq('status', 'travado')
     .order('data', { ascending: true });
+  const { data: fechamentos, error: eFechs } = await (inclusivo
+    ? filtro.gte('data', dataInicial)
+    : filtro.gt('data', dataInicial));
   if (eFechs) throw eFechs;
   if (!fechamentos || fechamentos.length === 0) return;
 
@@ -990,8 +1166,10 @@ export async function recalcularCascata(dataInicial: string): Promise<void> {
         if (m.forma_pagamento === 'credito') creditoBruto += BigInt(m.valor_centavos);
         if (m.forma_pagamento === 'dinheiro') oldCashSales += BigInt(m.valor_centavos);
       } else if (m.tipo === 'taxa_cartao') {
+        // O movimento guarda o líquido; somar a taxa de volta reconstrói o bruto.
         if (m.descricao?.includes('débito')) debitoBruto += -BigInt(m.valor_centavos);
-        if (m.descricao?.includes('crédito')) creditoBruto += -BigInt(m.valor_centavos);
+        else if (m.descricao?.includes('crédito')) creditoBruto += -BigInt(m.valor_centavos);
+        else if (m.descricao?.includes('PIX')) pix += -BigInt(m.valor_centavos);
       } else if (m.tipo === 'despesa' && m.forma_pagamento === 'dinheiro') {
         despesasDinheiro += -BigInt(m.valor_centavos);
       } else if (m.tipo === 'recebimento_fiado' && m.forma_pagamento === 'dinheiro') {

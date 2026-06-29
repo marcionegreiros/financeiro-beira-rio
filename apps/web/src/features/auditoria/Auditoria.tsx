@@ -79,11 +79,31 @@ export function Auditoria() {
   const [logs, setLogs] = useState<AuditoriaLog[]>([]);
   const [carregando, setCarregando] = useState(true);
 
-  const [busca, setBusca] = useState('');
-  const [filtroAcao, setFiltroAcao] = useState('');
-  const [filtroEntidade, setFiltroEntidade] = useState('');
-  const [de, setDe] = useState('');
-  const [ate, setAte] = useState('');
+  const [busca, setBusca] = useState(() => localStorage.getItem('pontao_filtro_auditoria_busca') ?? '');
+  const [filtroAcao, setFiltroAcao] = useState(() => localStorage.getItem('pontao_filtro_auditoria_acao') ?? '');
+  const [filtroEntidade, setFiltroEntidade] = useState(() => localStorage.getItem('pontao_filtro_auditoria_entidade') ?? '');
+  const [de, setDe] = useState(() => localStorage.getItem('pontao_filtro_auditoria_de') ?? '');
+  const [ate, setAte] = useState(() => localStorage.getItem('pontao_filtro_auditoria_ate') ?? '');
+
+  useEffect(() => {
+    localStorage.setItem('pontao_filtro_auditoria_busca', busca);
+  }, [busca]);
+
+  useEffect(() => {
+    localStorage.setItem('pontao_filtro_auditoria_acao', filtroAcao);
+  }, [filtroAcao]);
+
+  useEffect(() => {
+    localStorage.setItem('pontao_filtro_auditoria_entidade', filtroEntidade);
+  }, [filtroEntidade]);
+
+  useEffect(() => {
+    localStorage.setItem('pontao_filtro_auditoria_de', de);
+  }, [de]);
+
+  useEffect(() => {
+    localStorage.setItem('pontao_filtro_auditoria_ate', ate);
+  }, [ate]);
 
   useEffect(() => {
     let ativo = true;

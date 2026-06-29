@@ -3,36 +3,58 @@ import {
   listarContasCompletas,
   lancarTransferencia,
   listarMovimentos,
+  resumoEntradasBanco,
   type ContaCompleta,
   type MovimentoLista,
+  type ResumoEntradasBanco,
 } from '../../data/repositorios';
 import { uuidv7 } from '../../lib/uuidv7';
-import { parseReais, formatReais, negar, somar, ZERO } from '../../lib/money';
-import { agoraManausISO } from '../../lib/datas';
+import { parseReais, formatReais, negar, somar, ZERO, type Centavos } from '../../lib/money';
+import { agoraManausISO, hojeManaus, formatarDataBR } from '../../lib/datas';
 import { formatarDataHora, diaIso } from '../../lib/formato';
 import { useToast } from '../../components/ui/Toast';
 import { Modal } from '../../components/ui/Modal';
 import { DataTable, type Coluna } from '../../components/ui/DataTable';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { Campo, CLASSE_CAMPO } from '../../components/ui/Campo';
+import type { UsuarioAtual } from '../../data/usuario';
 
-export function Transferencias({ usuarioId }: { usuarioId: string }) {
+export function Transferencias({ usuario }: { usuario: UsuarioAtual }) {
+  const usuarioId = usuario.id;
   const toast = useToast();
   const [contas, setContas] = useState<ContaCompleta[]>([]);
   const [movimentos, setMovimentos] = useState<MovimentoLista[]>([]);
+  const [resumoBanco, setResumoBanco] = useState<ResumoEntradasBanco | null>(null);
   const [carregando, setCarregando] = useState(true);
 
   // Filtros
-  const [busca, setBusca] = useState('');
-  const [filtroTipo, setFiltroTipo] = useState('');
-  const [de, setDe] = useState('');
-  const [ate, setAte] = useState('');
+  const [busca, setBusca] = useState(() => localStorage.getItem('pontao_filtro_transferencias_busca') ?? '');
+  const [filtroTipo, setFiltroTipo] = useState(() => localStorage.getItem('pontao_filtro_transferencias_tipo') ?? '');
+  const [de, setDe] = useState(() => localStorage.getItem('pontao_filtro_transferencias_de') ?? '');
+  const [ate, setAte] = useState(() => localStorage.getItem('pontao_filtro_transferencias_ate') ?? '');
+
+  useEffect(() => {
+    localStorage.setItem('pontao_filtro_transferencias_busca', busca);
+  }, [busca]);
+
+  useEffect(() => {
+    localStorage.setItem('pontao_filtro_transferencias_tipo', filtroTipo);
+  }, [filtroTipo]);
+
+  useEffect(() => {
+    localStorage.setItem('pontao_filtro_transferencias_de', de);
+  }, [de]);
+
+  useEffect(() => {
+    localStorage.setItem('pontao_filtro_transferencias_ate', ate);
+  }, [ate]);
 
   // Modal + formulário
   const [aberto, setAberto] = useState(false);
   const [contaOrigemId, setContaOrigemId] = useState('');
   const [contaDestinoId, setContaDestinoId] = useState('');
   const [valorStr, setValorStr] = useState('');
+  const [dataTransferencia, setDataTransferencia] = useState(() => hojeManaus());
   const [descricao, setDescricao] = useState('');
   const [salvando, setSalvando] = useState(false);
 
@@ -62,6 +84,25 @@ export function Transferencias({ usuarioId }: { usuarioId: string }) {
       ativo = false;
     };
   }, [toast]);
+
+  // Período do resumo "Entradas no banco": segue o filtro de datas; sem filtro = hoje.
+  const periodoDe = de || ate || hojeManaus();
+  const periodoAte = ate || de || hojeManaus();
+
+  useEffect(() => {
+    let ativo = true;
+    (async () => {
+      try {
+        const r = await resumoEntradasBanco(periodoDe, periodoAte);
+        if (ativo) setResumoBanco(r);
+      } catch (e) {
+        console.error(e);
+      }
+    })();
+    return () => {
+      ativo = false;
+    };
+  }, [periodoDe, periodoAte]);
 
   // Uma linha por operação: a perna de saída (valor negativo) tem origem=conta, destino=contraparte.
   const saidas = useMemo(() => movimentos.filter((m) => m.valorCentavos < 0n), [movimentos]);
@@ -103,13 +144,16 @@ export function Transferencias({ usuarioId }: { usuarioId: string }) {
     try {
       const destino = contas.find((c) => c.id === contaDestinoId);
       const ehDeposito = destino?.tipo === 'banco';
+      const dataHora = dataTransferencia === hojeManaus()
+        ? agoraManausISO()
+        : `${dataTransferencia}T12:00:00-04:00`;
       await lancarTransferencia(
         uuidv7(),
         uuidv7(),
         contaOrigemId,
         contaDestinoId,
         valor,
-        agoraManausISO(),
+        dataHora,
         descricao,
         usuarioId,
         ehDeposito,
@@ -119,6 +163,7 @@ export function Transferencias({ usuarioId }: { usuarioId: string }) {
       setContaOrigemId('');
       setContaDestinoId('');
       setValorStr('');
+      setDataTransferencia(hojeManaus());
       setDescricao('');
       await recarregar();
     } catch (e) {
@@ -235,6 +280,36 @@ export function Transferencias({ usuarioId }: { usuarioId: string }) {
         )}
       </div>
 
+      {resumoBanco && (
+        <div className="cartao p-5">
+          <div className="mb-3 flex items-center justify-between">
+            <div>
+              <h2 className="text-sm font-semibold text-claro">Entradas no banco</h2>
+              <p className="text-[11px] text-suave">
+                Quanto de cada canal caiu no banco — desconto da taxa em separado (não é da gaveta).
+              </p>
+            </div>
+            <span className="numeros text-xs text-suave">
+              {periodoDe === periodoAte
+                ? formatarDataBR(periodoDe)
+                : `${formatarDataBR(periodoDe)} – ${formatarDataBR(periodoAte)}`}
+            </span>
+          </div>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <ResumoItem rotulo="PIX (líquido)" valor={resumoBanco.pix} />
+            <ResumoItem rotulo="Débito (líquido)" valor={resumoBanco.debito} />
+            <ResumoItem rotulo="Crédito (líquido)" valor={resumoBanco.credito} />
+            <ResumoItem rotulo="Total no banco" valor={resumoBanco.totalLiquido} destaque />
+          </div>
+          <div className="mt-3 flex items-center justify-between border-t border-borda/40 pt-3 text-sm">
+            <span className="text-suave">Desconto do banco (taxa de cartão)</span>
+            <span className="numeros font-semibold text-negativo">
+              −&nbsp;{formatReais(resumoBanco.taxa)}
+            </span>
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center justify-between px-1 text-sm text-suave">
         <span>
           {filtrados.length} {filtrados.length === 1 ? 'operação' : 'operações'}
@@ -259,6 +334,9 @@ export function Transferencias({ usuarioId }: { usuarioId: string }) {
         descricao="O valor sai da origem e entra no destino. Depósito é quando o destino é uma conta de banco."
       >
         <form onSubmit={aoSalvar} className="flex flex-col gap-4">
+          <div className="rounded-lg bg-claro/5 px-3 py-2 text-xs text-suave">
+            Operador responsável: <span className="font-semibold text-claro">{usuario.nome}</span>
+          </div>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Campo label="Conta de origem" obrigatorio>
               <select aria-label="Conta de origem" className={CLASSE_CAMPO} value={contaOrigemId} onChange={(e) => setContaOrigemId(e.target.value)}>
@@ -281,15 +359,25 @@ export function Transferencias({ usuarioId }: { usuarioId: string }) {
               </select>
             </Campo>
           </div>
-          <Campo label="Valor (R$)" obrigatorio>
-            <input
-              inputMode="decimal"
-              className={`${CLASSE_CAMPO} numeros text-right sm:w-1/2`}
-              placeholder="0,00"
-              value={valorStr}
-              onChange={(e) => setValorStr(e.target.value)}
-            />
-          </Campo>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Campo label="Data da operação" obrigatorio>
+              <input
+                type="date"
+                className={CLASSE_CAMPO}
+                value={dataTransferencia}
+                onChange={(e) => setDataTransferencia(e.target.value)}
+              />
+            </Campo>
+            <Campo label="Valor (R$)" obrigatorio>
+              <input
+                inputMode="decimal"
+                className={`${CLASSE_CAMPO} numeros text-right`}
+                placeholder="0,00"
+                value={valorStr}
+                onChange={(e) => setValorStr(e.target.value)}
+              />
+            </Campo>
+          </div>
           <Campo label="Descrição">
             <input
               className={CLASSE_CAMPO}
@@ -308,6 +396,23 @@ export function Transferencias({ usuarioId }: { usuarioId: string }) {
           </div>
         </form>
       </Modal>
+    </div>
+  );
+}
+
+function ResumoItem({ rotulo, valor, destaque }: { rotulo: string; valor: Centavos; destaque?: boolean }) {
+  return (
+    <div
+      className={`rounded-xl border p-3 ${
+        destaque ? 'border-positivo/50 bg-positivo/[0.06]' : 'border-borda/40'
+      }`}
+    >
+      <p className={`text-[11px] font-medium uppercase tracking-wide ${destaque ? 'text-positivo' : 'text-suave'}`}>
+        {rotulo}
+      </p>
+      <p className={`numeros mt-1 text-lg font-bold ${destaque ? 'text-positivo' : 'text-claro'}`}>
+        {formatReais(valor)}
+      </p>
     </div>
   );
 }
