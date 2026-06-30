@@ -36,6 +36,7 @@ export interface ProdutoCtx {
   preco: Centavos | undefined;
   estoqueAnterior: Quantidade;
   modoApuracao: 'contagem' | 'individual';
+  categoriaNome: string;
 }
 
 export interface ContextoFechamento {
@@ -43,6 +44,7 @@ export interface ContextoFechamento {
   jaExisteHoje: boolean;
   status: 'aberto' | 'travado' | null;
   fechamentoId: string | null;
+  confirmadoEm?: string | null;
   bombas: BombaCtx[];
   produtos: ProdutoCtx[]; // Apenas contagem
   produtosIndividuais: ProdutoCtx[]; // Apenas individual
@@ -69,6 +71,9 @@ export interface ContextoFechamento {
     fiadosConcedidos: { id?: string; clienteId: string; valor: string; vencimento: string | null }[];
     fiadosRecebidos: { id?: string; clienteId: string; valor: string; fiadoId: string | null }[];
     contado: string;
+    diferenca?: Centavos;
+    esperado?: Centavos;
+    transferenciaDestinoId?: string | null;
     observacao: string;
   } | undefined;
   mostrarProdutosAvulsos: boolean;
@@ -98,8 +103,9 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
     { data: taxasRaw, error: eTaxa },
     { data: anteriorRaw },
     fiadosEmAberto,
+    { data: categoriasRaw, error: eCat },
   ] = await Promise.all([
-    supabase.from('fechamento').select('id, status, rascunho').eq('data', data).maybeSingle(),
+    supabase.from('fechamento').select('id, status, rascunho, confirmado_em').eq('data', data).maybeSingle(),
     supabase
       .from('bomba')
       .select('id,nome,tanque!inner(combustivel_id,ativo,combustivel(nome))')
@@ -108,7 +114,7 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
     supabase.from('preco_combustivel').select('combustivel_id,valor_centavos,valido_a_partir_de'),
     supabase
       .from('produto')
-      .select('id,nome,ordem,modo_apuracao,ativo')
+      .select('id,nome,ordem,modo_apuracao,ativo,categoria_id')
       .order('ordem'),
     supabase.from('preco_produto').select('produto_id,valor_centavos,valido_a_partir_de'),
     supabase.from('config').select('chave,valor_json'),
@@ -124,10 +130,11 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
       .limit(1)
       .maybeSingle(),
     listarFiadosEmAberto(),
+    supabase.from('categoria').select('id,nome'),
   ]);
-  for (const e of [eB, ePC, eP, ePP, eCfg, eC, eCli, eTaxa]) if (e) throw e;
+  for (const e of [eB, ePC, eP, ePP, eCfg, eC, eCli, eTaxa, eCat]) if (e) throw e;
 
-  const fechExistente = existeHoje as { id: string; status: 'aberto' | 'travado'; rascunho: any } | null;
+  const fechExistente = existeHoje as { id: string; status: 'aberto' | 'travado'; rascunho: any; confirmado_em: string | null } | null;
   const jaExisteHoje = Boolean(fechExistente && fechExistente.status === 'travado');
   const status = fechExistente?.status ?? null;
   const fechamentoId = fechExistente?.id ?? null;
@@ -309,6 +316,7 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
   let oldCashSales = 0n;
   let oldDiferenca = 0n;
   let recebimentosFiadoDinheiro = 0n;
+  let savedTransferenciaDestinoId: string | null = null;
 
   for (const m of mSalvos) {
     if (m.tipo === 'recebimento_venda') {
@@ -324,15 +332,17 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
       recebimentosFiadoDinheiro += BigInt(m.valor_centavos);
     } else if (m.tipo === 'diferenca_caixa') {
       oldDiferenca = BigInt(m.valor_centavos);
+    } else if (m.tipo === 'transferencia' || m.tipo === 'deposito') {
+      if (m.conta_id === contaCaixaId) {
+        savedTransferenciaDestinoId = m.contraparte_conta_id;
+      }
     }
   }
 
-  // Se for fechamento antigo (confirmado antes de 28/06/2026), reconstrói o BRUTO somando a taxa
-  if (data < '2026-06-28') {
-    if (debito && debitoTaxa > 0n) debito = centavosParaString(Number(parseReais(debito) + debitoTaxa));
-    if (credito && creditoTaxa > 0n) credito = centavosParaString(Number(parseReais(credito) + creditoTaxa));
-    if (pix && pixTaxa > 0n) pix = centavosParaString(Number(parseReais(pix) + pixTaxa));
-  }
+  // Reconstrói o BRUTO somando a taxa
+  if (debito && debitoTaxa > 0n) debito = centavosParaString(Number(parseReais(debito) + debitoTaxa));
+  if (credito && creditoTaxa > 0n) credito = centavosParaString(Number(parseReais(credito) + creditoTaxa));
+  if (pix && pixTaxa > 0n) pix = centavosParaString(Number(parseReais(pix) + pixTaxa));
 
   const fiadosConcedidos = fSalvos.map((f) => ({
     id: f.id,
@@ -353,9 +363,10 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
       };
     });
 
+  let esperadoVal = 0n;
   if (fechExistente) {
-    const esperado = oldCashSales - despesasDinheiroDia + recebimentosFiadoDinheiro + trocoFixo;
-    const contadoVal = esperado + oldDiferenca;
+    esperadoVal = oldCashSales - despesasDinheiroDia + recebimentosFiadoDinheiro + trocoFixo;
+    const contadoVal = esperadoVal + oldDiferenca;
     contado = centavosParaString(contadoVal);
     observacao = fechInfo?.observacao ?? '';
   }
@@ -373,12 +384,17 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
       fiadosConcedidos,
       fiadosRecebidos,
       contado,
+      diferenca: asCentavos(oldDiferenca),
+      esperado: asCentavos(esperadoVal),
+      transferenciaDestinoId: savedTransferenciaDestinoId,
       observacao,
     };
   }
 
+  const categorias = (categoriasRaw ?? []) as Array<{ id: string; nome: string }>;
+
   const todosProdutos: ProdutoCtx[] = (
-    (produtosRaw ?? []) as Array<{ id: string; nome: string; ordem: number; modo_apuracao: 'contagem' | 'individual'; ativo: boolean }>
+    (produtosRaw ?? []) as Array<{ id: string; nome: string; ordem: number; modo_apuracao: 'contagem' | 'individual'; ativo: boolean; categoria_id: string }>
   )
     .filter((p) => {
       if (p.ativo) return true;
@@ -390,14 +406,18 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
       if (qtdAnterior.has(p.id)) return true;
       return false;
     })
-    .map((p) => ({
-      id: p.id,
-      nome: p.nome,
-      ordem: p.ordem,
-      preco: precoVigenteEm(histProd.get(p.id) ?? [], data),
-      estoqueAnterior: paraQuantidade(qtdAnterior.get(p.id) ?? 0),
-      modoApuracao: p.modo_apuracao as 'contagem' | 'individual',
-    }));
+    .map((p) => {
+      const cat = categorias.find(c => c.id === p.categoria_id);
+      return {
+        id: p.id,
+        nome: p.nome,
+        ordem: p.ordem,
+        preco: precoVigenteEm(histProd.get(p.id) ?? [], data),
+        estoqueAnterior: paraQuantidade(qtdAnterior.get(p.id) ?? 0),
+        modoApuracao: p.modo_apuracao as 'contagem' | 'individual',
+        categoriaNome: cat?.nome ?? 'Outros',
+      };
+    });
 
   const produtos = todosProdutos.filter((p) => p.modoApuracao === 'contagem');
   const produtosIndividuais = todosProdutos.filter((p) => p.modoApuracao === 'individual');
@@ -422,6 +442,7 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
     entradasDoDia,
     valoresSalvos,
     mostrarProdutosAvulsos,
+    confirmadoEm: fechExistente?.confirmado_em ?? null,
   };
 }
 

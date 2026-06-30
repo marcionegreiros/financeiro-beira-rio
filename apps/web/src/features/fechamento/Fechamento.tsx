@@ -31,6 +31,7 @@ import {
   removerDespesa,
   salvarClienteFiado,
   listarContasCompletas,
+  listarSaldos,
   type FechamentoRecente,
   type FechamentoResumo,
   type DespesaDoDia,
@@ -38,7 +39,7 @@ import {
 } from '../../data/repositorios';
 import { uuidv7 } from '../../lib/uuidv7';
 import { NovaDespesaModal, FORMAS_PAGAMENTO } from '../financeiro/NovaDespesaModal';
-import { hojeManaus, formatarDataBR } from '../../lib/datas';
+import { hojeManaus, formatarDataBR, agoraManausISO } from '../../lib/datas';
 import { useToast } from '../../components/ui/Toast';
 import { Modal } from '../../components/ui/Modal';
 import { DataTable, type Coluna } from '../../components/ui/DataTable';
@@ -82,10 +83,12 @@ function formatarLeituraAnterior(valor: Mililitros): string {
 
 interface Props {
   usuarioId: string | null;
+  usuarioNome?: string;
+  usuarioFotoUrl?: string | null;
   podeReabrir?: boolean;
 }
 
-export function Fechamento({ usuarioId, podeReabrir }: Props) {
+export function Fechamento({ usuarioId, usuarioNome, usuarioFotoUrl, podeReabrir }: Props) {
   const isOnline = useOnlineStatus();
   const toast = useToast();
   const [aba, setAba] = useState<'fechar' | 'historico'>(() => {
@@ -130,6 +133,7 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
   const [ctx, setCtx] = useState<ContextoFechamento | null>(null);
   const [erroCarga, setErroCarga] = useState<string | null>(null);
   const [contas, setContas] = useState<ContaCompleta[]>([]);
+  const [saldos, setSaldos] = useState<{ id: string; saldo: Centavos }[]>([]);
   const [destinoTransfId, setDestinoTransfId] = useState(() => {
     const key = usuarioId ? `pontao_fechamento_destino_${usuarioId}` : 'pontao_fechamento_destino_default';
     return localStorage.getItem(key) ?? '';
@@ -239,6 +243,10 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
     listarContasCompletas()
       .then((c) => setContas(c.filter((x) => x.ativo)))
       .catch((err) => console.error('Erro ao carregar contas:', err));
+
+    listarSaldos()
+      .then((s) => setSaldos(s))
+      .catch((err) => console.error('Erro ao carregar saldos:', err));
 
     carregarContexto(dataSelecionada)
       .then((contexto) => {
@@ -609,16 +617,70 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
         transferenciaDestinoEhBanco: contas.find(c => c.id === destinoTransfId)?.tipo === 'banco',
       };
       await confirmarFechamento(resumo);
+      
+      let transferencia;
+      
+      if (calc.aDepositar && calc.aDepositar !== 0n && destinoTransfId) {
+        const conta = contas.find(c => c.id === destinoTransfId);
+        const destinoNome = conta?.nome ?? 'Desconhecida';
+        const destinoFotoUrl = conta?.fotoUrl ?? null;
+        const ehBanco = conta?.tipo === 'banco';
+        let saldoDestino;
+        try {
+          const saldos = await listarSaldos();
+          saldoDestino = saldos.find(s => s.id === destinoTransfId)?.saldo;
+        } catch (e) {
+          console.error('Erro ao buscar saldo destino', e);
+        }
+        transferencia = {
+          destinoNome,
+          destinoFotoUrl,
+          ehBanco,
+          valor: asCentavos(calc.aDepositar),
+          ...(saldoDestino !== undefined ? { saldoDestino: asCentavos(saldoDestino) } : {})
+        };
+      } else {
+        const sourceConta = contas.find(c => c.id === ctx.contaCaixaId)
+                         || contas.find(c => c.ehDestinoPadraoVenda && c.tipo === 'dinheiro')
+                         || contas.find(c => c.tipo === 'dinheiro');
+        const destinoNome = sourceConta?.nome ?? 'Caixa Gaveta';
+        const destinoFotoUrl = sourceConta?.fotoUrl ?? null;
+        let saldoDestino;
+        try {
+          const saldos = await listarSaldos();
+          saldoDestino = sourceConta ? (saldos.find(s => s.id === sourceConta.id)?.saldo ?? 0n) : 0n;
+        } catch (e) {
+          console.error('Erro ao buscar saldo destino', e);
+        }
+        transferencia = {
+          destinoNome,
+          destinoFotoUrl,
+          ehBanco: false,
+          valor: asCentavos(0n),
+          ...(saldoDestino !== undefined ? { saldoDestino: asCentavos(saldoDestino) } : {}),
+          permaneuNoCaixa: true,
+        };
+      }
+
       setRelatorio({
         data: ctx.data,
+        fechadoEm: agoraManausISO(),
+        usuarioNome,
+        usuarioFotoUrl,
         bombas: calc.bombas.map((b) => ({
           nome: `${b.combustivel} (${b.nome})`,
           litrosMl: b.litrosMl,
           valor: b.valor,
         })),
-        produtos: calc.produtos
-          .filter((p) => p.preenchido)
-          .map((p) => ({ nome: p.nome, vendido: p.vendido, valor: p.valor })),
+        produtos: calc.produtos.map((p) => ({
+          nome: p.nome,
+          categoriaNome: p.categoriaNome,
+          estoqueAtual: p.atual,
+          entradas: p.ent,
+          vendido: p.vendido,
+          preco: p.preco ?? asCentavos(0n),
+          valor: p.valor,
+        })),
         vendaFisica: calc.vendaFisica,
         pix: calc.pixC,
         debito: calc.debitoC,
@@ -631,6 +693,30 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
         observacao: observacao.trim(),
         fiadoConcedido: calc.fiadoConC,
         fiadoRecebido: calc.fiadoRecC,
+        despesasDetalhes: despesasDoDia,
+        taxasCartao: {
+          pixNet: calc.dCartaoPix.liquido,
+          pixTaxa: calc.dCartaoPix.taxa,
+          debitoNet: calc.dCartaoDeb.liquido,
+          debitoTaxa: calc.dCartaoDeb.taxa,
+          creditoNet: calc.dCartaoCred.liquido,
+          creditoTaxa: calc.dCartaoCred.taxa,
+        },
+        destinoBancarioNome: contas.find(c => c.tipo === 'banco')?.nome ?? 'Banco (Padrão)',
+        destinoBancarioFotoUrl: contas.find(c => c.tipo === 'banco')?.fotoUrl ?? null,
+        transferencia,
+        produtosFaltando: calc.produtos
+          .filter(p => p.atual <= 0n)
+          .map(p => ({ nome: p.nome, estoqueAtual: p.atual })),
+        contasDinheiro: contas
+          .filter(c => c.tipo === 'dinheiro' && c.id !== (destinoTransfId || ctx.contaCaixaId))
+          .map(c => ({
+            id: c.id,
+            nome: c.nome,
+            fotoUrl: c.fotoUrl,
+            saldo: saldos.find(s => s.id === c.id)?.saldo ?? asCentavos(0n),
+          }))
+          .filter(c => c.saldo > 0n),
       });
       toast.sucesso('Fechamento confirmado e travado.');
     } catch (e) {
@@ -643,51 +729,136 @@ export function Fechamento({ usuarioId, podeReabrir }: Props) {
   const relatorioParaExibir = useMemo(() => {
     if (relatorio) return relatorio;
     if (ctx && ctx.status === 'travado' && calc) {
+      let contaDestinoId: string | null = destinoTransfId;
+      if (ctx.valoresSalvos) {
+        contaDestinoId = ctx.valoresSalvos.transferenciaDestinoId ?? null;
+      }
+
+      let transferencia;
+      
+      if (calc.aDepositar && calc.aDepositar !== 0n && contaDestinoId) {
+        const conta = contas.find(c => c.id === contaDestinoId);
+        const destinoNome = conta?.nome ?? 'Desconhecida';
+        const destinoFotoUrl = conta?.fotoUrl ?? null;
+        const ehBanco = conta?.tipo === 'banco';
+        const saldoDestino = saldos.find(s => s.id === contaDestinoId)?.saldo;
+        
+        transferencia = {
+          destinoNome,
+          destinoFotoUrl,
+          ehBanco,
+          valor: asCentavos(calc.aDepositar),
+          ...(saldoDestino !== undefined ? { saldoDestino: asCentavos(saldoDestino) } : {})
+        };
+      } else {
+        const sourceConta = contas.find(c => c.id === ctx.contaCaixaId)
+                         || contas.find(c => c.ehDestinoPadraoVenda && c.tipo === 'dinheiro')
+                         || contas.find(c => c.tipo === 'dinheiro');
+        const destinoNome = sourceConta?.nome ?? 'Caixa Gaveta';
+        const destinoFotoUrl = sourceConta?.fotoUrl ?? null;
+        const saldoDestino = sourceConta ? (saldos.find(s => s.id === sourceConta.id)?.saldo ?? 0n) : 0n;
+        
+        transferencia = {
+          destinoNome,
+          destinoFotoUrl,
+          ehBanco: false,
+          valor: asCentavos(0n),
+          saldoDestino: asCentavos(saldoDestino),
+          permaneuNoCaixa: true,
+        };
+      }
+
       return {
         data: ctx.data,
+        fechadoEm: ctx.confirmadoEm ?? null,
+        usuarioNome,
+        usuarioFotoUrl,
         bombas: calc.bombas.map((b) => ({
           nome: `${b.combustivel} (${b.nome})`,
           litrosMl: b.litrosMl,
           valor: b.valor,
         })),
-        produtos: calc.produtos
-          .filter((p) => p.preenchido)
-          .map((p) => ({ nome: p.nome, vendido: p.vendido, valor: p.valor })),
+        produtos: calc.produtos.map((p) => ({
+          nome: p.nome,
+          categoriaNome: p.categoriaNome,
+          estoqueAtual: p.atual,
+          entradas: p.ent,
+          vendido: p.vendido,
+          preco: p.preco ?? asCentavos(0n),
+          valor: p.valor,
+        })),
         vendaFisica: calc.vendaFisica,
         pix: calc.pixC,
         debito: calc.debitoC,
         credito: calc.creditoC,
         despesa: calc.despesaC,
-        esperado: calc.esperado,
-        contado: calc.contadoC,
-        diferenca: calc.diferenca,
+        esperado: ctx.valoresSalvos?.esperado !== undefined ? ctx.valoresSalvos.esperado : calc.esperado,
+        contado: ctx.valoresSalvos?.contado ? parseReais(ctx.valoresSalvos.contado) : calc.contadoC,
+        diferenca: ctx.valoresSalvos?.diferenca !== undefined ? ctx.valoresSalvos.diferenca : calc.diferenca,
         aDepositar: calc.aDepositar,
         observacao: observacao,
         fiadoConcedido: calc.fiadoConC,
         fiadoRecebido: calc.fiadoRecC,
+        despesasDetalhes: despesasDoDia,
+        taxasCartao: {
+          pixNet: calc.dCartaoPix.liquido,
+          pixTaxa: calc.dCartaoPix.taxa,
+          debitoNet: calc.dCartaoDeb.liquido,
+          debitoTaxa: calc.dCartaoDeb.taxa,
+          creditoNet: calc.dCartaoCred.liquido,
+          creditoTaxa: calc.dCartaoCred.taxa,
+        },
+        destinoBancarioNome: contas.find(c => c.tipo === 'banco')?.nome ?? 'Banco (Padrão)',
+        destinoBancarioFotoUrl: contas.find(c => c.tipo === 'banco')?.fotoUrl ?? null,
+        transferencia,
+        produtosFaltando: calc.produtos
+          .filter(p => p.atual <= 0n)
+          .map(p => ({ nome: p.nome, estoqueAtual: p.atual })),
+        contasDinheiro: contas
+          .filter(c => c.tipo === 'dinheiro' && c.id !== (contaDestinoId || ctx.contaCaixaId))
+          .map(c => ({
+            id: c.id,
+            nome: c.nome,
+            fotoUrl: c.fotoUrl,
+            saldo: saldos.find(s => s.id === c.id)?.saldo ?? asCentavos(0n),
+          }))
+          .filter(c => c.saldo > 0n),
       };
     }
     return null;
-  }, [relatorio, ctx, calc, observacao]);
+  }, [relatorio, ctx, calc, observacao, despesasDoDia, destinoTransfId, contas]);
 
   if (erroCarga)
     return <div className="cartao p-6 text-sm text-negativo">Erro ao carregar o fechamento: {erroCarga}</div>;
   if (!ctx || !calc) return <p className="p-6 text-sm text-suave">Carregando fechamento…</p>;
 
-  const statusBadge = ctx.status ? (
-    <span
-      className={`inline-flex shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${
-        ctx.status === 'travado' ? 'bg-positivo/15 text-positivo' : 'bg-atencao/15 text-atencao'
-      }`}
-    >
-      {ctx.status === 'travado' ? 'Fechamento travado' : 'Rascunho aberto'}
+  const statusBadge = ctx.status && ctx.status !== 'travado' ? (
+    <span className="inline-flex shrink-0 rounded-full px-2.5 py-1 text-xs font-medium bg-atencao/15 text-atencao">
+      Rascunho aberto
     </span>
   ) : null;
 
   const cabecalho = (
-    <div className="flex flex-col gap-4 border-b border-borda/50 pb-4 mb-2">
+    <div className="flex flex-col gap-4 border-b border-borda/50 pb-4 mb-2 print:hidden">
       <PageHeader
-        titulo="Fechamento de caixa"
+        titulo={
+          relatorioParaExibir ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <span>Fechamento de caixa</span>
+              <div className="flex items-center gap-1.5">
+                <span className="inline-flex items-center gap-1 bg-positivo/20 border border-positivo/40 text-positivo px-2.5 py-1 rounded-full text-xs font-semibold uppercase tracking-wider shadow-sm shadow-positivo/10">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0"><polyline points="20 6 9 17 4 12"/></svg>
+                  Concluído
+                </span>
+                <span className="inline-flex items-center justify-center w-6 h-6 bg-ambar/20 border border-ambar/30 text-ambar rounded-full shadow-sm shadow-ambar/10 shrink-0" title="Fechamento travado">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                </span>
+              </div>
+            </div>
+          ) : (
+            "Fechamento de caixa"
+          )
+        }
         subtitulo="Conferência diária de vendas, pagamentos e caixa"
         acao={<AbaSwitch aba={aba} aoTrocar={setAba} />}
       />

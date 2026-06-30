@@ -81,3 +81,17 @@ export function formatarDataBR(dataIso: string | null | undefined): string {
   const [ano, mes, dia] = partes;
   return `${dia}/${mes}/${ano}`;
 }
+
+/** Formata hora a partir de um timestamp ISO (HH:MM). */
+export function formatarHoraBR(timestampIso: string | null | undefined): string {
+  if (!timestampIso) return '';
+  try {
+    const d = new Date(timestampIso);
+    if (isNaN(d.getTime())) return '';
+    const h = String(d.getHours()).padStart(2, '0');
+    const m = String(d.getMinutes()).padStart(2, '0');
+    return `${h}:${m}`;
+  } catch {
+    return '';
+  }
+}

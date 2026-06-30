@@ -203,7 +203,7 @@ export function Shell({ usuario }: { usuario: UsuarioAtual }) {
   const itensNav = [
     podeVerPainel && { id: 'painel' as Tela, label: 'Painel' },
     podeFechar && { id: 'fechamento' as Tela, label: 'Fechar caixa' },
-    podeLancarDespesa && { id: 'despesas' as Tela, label: 'Despesas' },
+    podeLancarDespesa && { id: 'despesas' as Tela, label: 'Saídas' },
     (podeTransferir || podeGerenciarContas) && {
       id: 'transferencias' as Tela,
       label: 'Contas & transferências',
@@ -252,7 +252,7 @@ export function Shell({ usuario }: { usuario: UsuarioAtual }) {
   return (
     <div className="flex min-h-full flex-col md:flex-row">
       {/* ───────── Sidebar desktop ───────── */}
-      <aside className="sticky top-0 hidden h-screen w-[260px] shrink-0 select-none flex-col border-r border-sidebar-borda bg-sidebar text-sidebar-texto md:flex">
+      <aside className="sticky top-0 hidden h-screen w-[260px] shrink-0 select-none flex-col border-r border-sidebar-borda bg-sidebar text-sidebar-texto md:flex print:hidden">
         {/* Marca */}
         <div className="flex h-16 items-center gap-3 border-b border-sidebar-borda px-5">
           <Logo />
@@ -322,7 +322,7 @@ export function Shell({ usuario }: { usuario: UsuarioAtual }) {
       </aside>
 
       {/* ───────── Topbar mobile ───────── */}
-      <header className="sticky top-0 z-40 flex h-16 items-center justify-between border-b border-sidebar-borda bg-sidebar px-4 text-sidebar-texto md:hidden">
+      <header className="sticky top-0 z-40 flex h-16 items-center justify-between border-b border-sidebar-borda bg-sidebar px-4 text-sidebar-texto md:hidden print:hidden">
         <div className="flex items-center gap-2.5">
           <Logo />
           <span className="font-display text-base font-bold tracking-tight">Pontão Beira Rio</span>
@@ -444,6 +444,8 @@ export function Shell({ usuario }: { usuario: UsuarioAtual }) {
               {tela === 'fechamento' && podeFechar && (
                 <Fechamento
                   usuarioId={usuario.id}
+                  usuarioNome={usuario.nome}
+                  usuarioFotoUrl={usuario.fotoUrl}
                   podeReabrir={usuario.permissoes.has('reabrir_fechamento')}
                 />
               )}
