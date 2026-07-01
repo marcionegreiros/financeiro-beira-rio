@@ -73,6 +73,18 @@ export function agoraNaDataManaus(data: string = hojeManaus()): string {
   return `${data}T${pad2(hora)}:${pad2(minuto)}:${pad2(segundo)}-04:00`;
 }
 
+/**
+ * Dia da semana de uma data YYYY-MM-DD (0=Domingo … 6=Sábado).
+ * Calendário é independente de fuso, então usa UTC para não deslocar o dia.
+ */
+export function diaSemanaManaus(data: string): number {
+  const partes = data.split('-');
+  const ano = Number(partes[0]);
+  const mes = Number(partes[1]);
+  const dia = Number(partes[2]);
+  return new Date(Date.UTC(ano, mes - 1, dia)).getUTCDay();
+}
+
 /** Formata data YYYY-MM-DD para DD/MM/YYYY. */
 export function formatarDataBR(dataIso: string | null | undefined): string {
   if (!dataIso) return '';

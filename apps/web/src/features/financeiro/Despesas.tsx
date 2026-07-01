@@ -1,12 +1,14 @@
 import { useState, useEffect, useMemo, type ReactNode } from 'react';
 import {
   listarCategoriasDespesa,
+  listarContasCompletas,
   listarMovimentos,
   type CategoriaDespesa,
   type MovimentoLista,
   removerDespesa,
   verificarFechamentoStatus,
 } from '../../data/repositorios';
+import { idContaGaveta } from '../../lib/formasPagamento';
 import { formatReais, negar, somar, ZERO } from '../../lib/money';
 import { hojeManaus, formatarDataBR } from '../../lib/datas';
 import { formatarDataHora, diaIso } from '../../lib/formato';
@@ -84,6 +86,9 @@ export function Despesas({ usuario }: { usuario: UsuarioAtual }) {
   const [categorias, setCategorias] = useState<CategoriaDespesa[]>([]);
   const [movimentos, setMovimentos] = useState<MovimentoLista[]>([]);
   const [carregando, setCarregando] = useState(true);
+  // Só as saídas da conta gaveta entram no fechamento; a trava de caixa fechado
+  // se aplica apenas a elas (banco/outras contas dinheiro passam direto).
+  const [idGaveta, setIdGaveta] = useState<string | null>(null);
 
   // Filtros
   const [busca, setBusca] = useState(() => localStorage.getItem('pontao_filtro_despesas_busca') ?? '');
@@ -136,13 +141,15 @@ export function Despesas({ usuario }: { usuario: UsuarioAtual }) {
     let ativo = true;
     (async () => {
       try {
-        const [cat, movs] = await Promise.all([
+        const [cat, movs, contas] = await Promise.all([
           listarCategoriasDespesa(),
           listarMovimentos(TIPOS_SAIDA),
+          listarContasCompletas(),
         ]);
         if (!ativo) return;
         setCategorias(cat.filter((x) => x.nome.toLowerCase() !== 'perda'));
         setMovimentos(movs);
+        setIdGaveta(idContaGaveta(contas));
       } catch (e) {
         console.error(e);
         if (ativo) toast.erro('Falha ao carregar as saídas.');
@@ -186,7 +193,10 @@ export function Despesas({ usuario }: { usuario: UsuarioAtual }) {
   async function aoExcluirClick(m: MovimentoLista) {
     const dia = diaIso(m.dataHora);
     try {
-      const statusFechamento = await verificarFechamentoStatus(dia);
+      // A trava de caixa fechado só vale para o dinheiro da gaveta. Saídas de
+      // banco/outras contas dinheiro são excluídas direto, mesmo com dia fechado.
+      const afetaGaveta = idGaveta != null && m.contaId === idGaveta;
+      const statusFechamento = afetaGaveta ? await verificarFechamentoStatus(dia) : 'aberto';
       const isFechado = statusFechamento === 'travado';
 
       if (isFechado) {
@@ -334,7 +344,9 @@ export function Despesas({ usuario }: { usuario: UsuarioAtual }) {
             </div>
           );
         }
-        const isFechado = m.fechamentoStatus === 'travado';
+        // O cadeado só aparece para saídas da gaveta em dia fechado — são as
+        // únicas que mexem na contagem do caixa.
+        const isFechado = m.fechamentoStatus === 'travado' && idGaveta != null && m.contaId === idGaveta;
         return (
           <EditarExcluir
             iconeEditar={isFechado ? <IconeLock className="h-4 w-4 text-ambar" /> : <IconePencil className="h-4 w-4" />}

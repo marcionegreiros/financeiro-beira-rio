@@ -23,11 +23,11 @@ export function MedidorTanque({ nome, combustivel, nivel, capacidade, nivelAlert
 
   return (
     <div className="flex flex-col items-center gap-2 rounded-2xl border border-borda/50 bg-ardosia/30 p-3 shadow-sm transition-all duration-300 hover:border-borda hover:shadow-md hover:bg-ardosia/50 group select-none min-w-[120px]">
-      <span className="text-[10px] font-bold uppercase tracking-wider text-suave">{nome}</span>
+      <span className="text-[9px] font-medium uppercase tracking-wider text-suave/80">{nome}</span>
       
       {/* Informações textuais no topo para leitura imediata */}
       <div className="flex flex-col items-center leading-tight">
-        <span className="text-xs font-bold text-claro truncate max-w-[110px] text-center" title={combustivel}>
+        <span className="text-sm font-extrabold text-claro truncate max-w-[110px] text-center" title={combustivel}>
           {combustivel}
         </span>
         <span className={`numeros text-lg font-extrabold mt-1 ${abaixoDoAlerta ? 'text-negativo font-black' : 'text-ambar font-black'}`}>

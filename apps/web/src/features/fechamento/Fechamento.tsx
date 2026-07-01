@@ -18,6 +18,7 @@ import {
   confirmarFechamento,
   reabrirFechamento,
   asQuantidade,
+  listarDiasAbertosAntes,
   type ContextoFechamento,
   type ResumoConfirmacao,
   salvarRascunhoFechamento,
@@ -32,14 +33,16 @@ import {
   salvarClienteFiado,
   listarContasCompletas,
   listarSaldos,
+  obterDadosTanquesFechamento,
   type FechamentoRecente,
   type FechamentoResumo,
   type DespesaDoDia,
   type ContaCompleta,
+  type TanqueRelatorioInfo,
 } from '../../data/repositorios';
 import { uuidv7 } from '../../lib/uuidv7';
 import { NovaDespesaModal, FORMAS_PAGAMENTO } from '../financeiro/NovaDespesaModal';
-import { hojeManaus, formatarDataBR, agoraManausISO } from '../../lib/datas';
+import { hojeManaus, formatarDataBR, agoraManausISO, diaSemanaManaus } from '../../lib/datas';
 import { useToast } from '../../components/ui/Toast';
 import { Modal } from '../../components/ui/Modal';
 import { DataTable, type Coluna } from '../../components/ui/DataTable';
@@ -47,6 +50,17 @@ import { PageHeader } from '../../components/ui/PageHeader';
 import { Campo, CLASSE_CAMPO } from '../../components/ui/Campo';
 
 const ZERO = asCentavos(0n);
+
+// Índice = dia da semana (0=Domingo … 6=Sábado).
+const DIAS_SEMANA_LONGO = [
+  'Domingo',
+  'Segunda-feira',
+  'Terça-feira',
+  'Quarta-feira',
+  'Quinta-feira',
+  'Sexta-feira',
+  'Sábado',
+];
 
 function centavosParaString(valor: number | bigint): string {
   const v = BigInt(valor);
@@ -123,12 +137,33 @@ export function Fechamento({ usuarioId, usuarioNome, usuarioFotoUrl, podeReabrir
   const [reabrindo, setReabrindo] = useState(false);
   const [recentes, setRecentes] = useState<FechamentoRecente[]>([]);
   const [dataSelecionada, setDataSelecionada] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const dataParam = params.get('data');
+      if (dataParam && /^\d{4}-\d{2}-\d{2}$/.test(dataParam)) {
+        return dataParam;
+      }
+    }
     return localStorage.getItem('pontao_fechamento_data_selecionada') ?? hojeManaus();
   });
 
   useEffect(() => {
     localStorage.setItem('pontao_fechamento_data_selecionada', dataSelecionada);
   }, [dataSelecionada]);
+
+  // Em dia configurado como sem funcionamento, a tela mostra "fechado" até o
+  // usuário optar por registrar mesmo assim. Reseta a cada troca de data.
+  const [forcarAbertura, setForcarAbertura] = useState(false);
+  useEffect(() => {
+    setForcarAbertura(false);
+  }, [dataSelecionada]);
+
+  // Avisos exibidos antes de travar o fechamento (dia sem registro / dias
+  // anteriores em aberto). null = nenhum aviso pendente.
+  const [avisoFinalizacao, setAvisoFinalizacao] = useState<{
+    semRegistroFisico: boolean;
+    diasAbertos: string[];
+  } | null>(null);
 
   const [ctx, setCtx] = useState<ContextoFechamento | null>(null);
   const [erroCarga, setErroCarga] = useState<string | null>(null);
@@ -169,6 +204,7 @@ export function Fechamento({ usuarioId, usuarioNome, usuarioFotoUrl, podeReabrir
   const [confirmando, setConfirmando] = useState(false);
   const [erroConfirmar, setErroConfirmar] = useState<string | null>(null);
   const [relatorio, setRelatorio] = useState<RelatorioDados | null>(null);
+  const [dadosTanques, setDadosTanques] = useState<TanqueRelatorioInfo[]>([]);
   const [salvandoRascunho, setSalvandoRascunho] = useState(false);
 
   // Manual save draft helper
@@ -247,6 +283,10 @@ export function Fechamento({ usuarioId, usuarioNome, usuarioFotoUrl, podeReabrir
     listarSaldos()
       .then((s) => setSaldos(s))
       .catch((err) => console.error('Erro ao carregar saldos:', err));
+
+    obterDadosTanquesFechamento(dataSelecionada)
+      .then((t) => setDadosTanques(t))
+      .catch((err) => console.error('Erro ao carregar dados de tanques:', err));
 
     carregarContexto(dataSelecionada)
       .then((contexto) => {
@@ -564,8 +604,35 @@ export function Fechamento({ usuarioId, usuarioNome, usuarioFotoUrl, podeReabrir
     refs.current[indice + 1]?.focus();
   }
 
+  // Avisos pré-finalização: dia sem registro físico (vai repetir estoque/série
+  // da bomba) e/ou dias anteriores ainda em aberto. Se houver algo a avisar,
+  // abre o modal; senão, finaliza direto.
   async function confirmar() {
     if (!ctx || !calc || !ctx.contaCaixaId) return;
+
+    const semRegistroFisico =
+      calc.bombas.every((b) => (leituras[b.id] ?? '').trim() === '') &&
+      calc.produtos.every((p) => (contagens[p.id] ?? '').trim() === '') &&
+      calc.ind.every((p) => (vendasIndividuais[p.id] ?? '').trim() === '');
+
+    let diasAbertos: string[] = [];
+    try {
+      diasAbertos = await listarDiasAbertosAntes(ctx.data);
+    } catch (e) {
+      console.error('Erro ao checar dias anteriores em aberto', e);
+    }
+
+    if (semRegistroFisico || diasAbertos.length > 0) {
+      setAvisoFinalizacao({ semRegistroFisico, diasAbertos });
+      return;
+    }
+
+    await executarConfirmacao();
+  }
+
+  async function executarConfirmacao() {
+    if (!ctx || !calc || !ctx.contaCaixaId) return;
+    setAvisoFinalizacao(null);
     setConfirmando(true);
     setErroConfirmar(null);
     try {
@@ -576,9 +643,15 @@ export function Fechamento({ usuarioId, usuarioNome, usuarioFotoUrl, podeReabrir
         usuarioId,
         contaCaixaId: ctx.contaCaixaId,
         contaBancoId: ctx.contaBancoId,
+        // Grava TODAS as bombas. Em branco → repete a leitura anterior (venda 0,
+        // série contínua). Sem isso, a bomba em branco não gerava linha e o dia
+        // seguinte lia 0 como leitura inicial, acusando "venda de milhões".
         leituras: calc.bombas
-          .filter((b) => (leituras[b.id] ?? '').trim() !== '' && !b.invalido)
-          .map((b) => ({ bombaId: b.id, leitura: b.atual })),
+          .filter((b) => !b.invalido)
+          .map((b) => ({
+            bombaId: b.id,
+            leitura: (leituras[b.id] ?? '').trim() !== '' ? b.atual : b.leituraAnterior,
+          })),
         contagens: calc.produtos
           .map((p) => ({ produtoId: p.id, quantidade: p.atual })),
         entradas: calc.produtos
@@ -671,6 +744,9 @@ export function Fechamento({ usuarioId, usuarioNome, usuarioFotoUrl, podeReabrir
           nome: `${b.combustivel} (${b.nome})`,
           litrosMl: b.litrosMl,
           valor: b.valor,
+          leituraAtual: b.atual,
+          entradasLitrosMl: b.entradasLitrosMl,
+          precoLitro: b.precoLitro,
         })),
         produtos: calc.produtos.map((p) => ({
           nome: p.nome,
@@ -717,6 +793,7 @@ export function Fechamento({ usuarioId, usuarioNome, usuarioFotoUrl, podeReabrir
             saldo: saldos.find(s => s.id === c.id)?.saldo ?? asCentavos(0n),
           }))
           .filter(c => c.saldo > 0n),
+        tanques: dadosTanques,
       });
       toast.sucesso('Fechamento confirmado e travado.');
     } catch (e) {
@@ -777,6 +854,9 @@ export function Fechamento({ usuarioId, usuarioNome, usuarioFotoUrl, podeReabrir
           nome: `${b.combustivel} (${b.nome})`,
           litrosMl: b.litrosMl,
           valor: b.valor,
+          leituraAtual: b.atual,
+          entradasLitrosMl: b.entradasLitrosMl,
+          precoLitro: b.precoLitro,
         })),
         produtos: calc.produtos.map((p) => ({
           nome: p.nome,
@@ -823,10 +903,11 @@ export function Fechamento({ usuarioId, usuarioNome, usuarioFotoUrl, podeReabrir
             saldo: saldos.find(s => s.id === c.id)?.saldo ?? asCentavos(0n),
           }))
           .filter(c => c.saldo > 0n),
+        tanques: dadosTanques,
       };
     }
     return null;
-  }, [relatorio, ctx, calc, observacao, despesasDoDia, destinoTransfId, contas]);
+  }, [relatorio, ctx, calc, observacao, despesasDoDia, destinoTransfId, contas, dadosTanques]);
 
   if (erroCarga)
     return <div className="cartao p-6 text-sm text-negativo">Erro ao carregar o fechamento: {erroCarga}</div>;
@@ -873,6 +954,58 @@ export function Fechamento({ usuarioId, usuarioNome, usuarioFotoUrl, podeReabrir
         </div>
       )}
     </div>
+  );
+
+  const modalAvisoFinalizacao = (
+    <Modal
+      aberto={!!avisoFinalizacao}
+      aoFechar={() => setAvisoFinalizacao(null)}
+      titulo="Confirmar fechamento"
+      descricao="Revise os avisos abaixo antes de travar o dia."
+    >
+      <div className="flex flex-col gap-4">
+        {avisoFinalizacao?.semRegistroFisico && (
+          <div className="rounded-xl border border-atencao/30 bg-atencao/10 p-4 text-sm text-claro">
+            <p className="font-semibold text-atencao">Dia sem registro de vendas</p>
+            <p className="mt-1 text-suave">
+              Nenhuma leitura de bomba, contagem ou venda foi preenchida. O estoque e a
+              série das bombas serão <strong>repetidos do fechamento anterior</strong> (venda
+              zero). Use isto para dias em que o estabelecimento não abriu.
+            </p>
+          </div>
+        )}
+        {avisoFinalizacao && avisoFinalizacao.diasAbertos.length > 0 && (
+          <div className="rounded-xl border border-negativo/30 bg-negativo/10 p-4 text-sm text-claro">
+            <p className="font-semibold text-negativo">
+              {avisoFinalizacao.diasAbertos.length === 1
+                ? 'Existe um dia anterior em aberto'
+                : 'Existem dias anteriores em aberto'}
+            </p>
+            <p className="mt-1 text-suave">
+              {avisoFinalizacao.diasAbertos.map(formatarDataBR).join(', ')}
+              {' — '}feche-o(s) primeiro para não deixar um dia aberto entre os fechados.
+            </p>
+          </div>
+        )}
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            className="btn btn-suave px-4 py-2 text-sm"
+            onClick={() => setAvisoFinalizacao(null)}
+          >
+            Voltar
+          </button>
+          <button
+            type="button"
+            disabled={confirmando}
+            className="btn btn-primario px-4 py-2 text-sm"
+            onClick={() => void executarConfirmacao()}
+          >
+            {confirmando ? 'Travando…' : 'Confirmar mesmo assim'}
+          </button>
+        </div>
+      </div>
+    </Modal>
   );
 
   const modalReabrir = (
@@ -944,6 +1077,43 @@ export function Fechamento({ usuarioId, usuarioNome, usuarioFotoUrl, podeReabrir
   }
 
 
+
+  // Dia configurado como sem funcionamento e ainda sem nada lançado: mostra o
+  // aviso em vez do formulário. Não bloqueia — há um atalho para registrar
+  // mesmo assim (ex.: um sábado em que abriu excepcionalmente).
+  if (!ctx.diaDeFuncionamento && ctx.status === null && !forcarAbertura) {
+    return (
+      <div className="flex flex-col gap-6">
+        {cabecalho}
+        <section className="cartao flex flex-col items-center gap-4 p-10 text-center">
+          <div className="rounded-full bg-ambar/10 p-4 text-ambar">
+            <svg className="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 9h18M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25A2.25 2.25 0 0118.75 21H5.25A2.25 2.25 0 013 18.75z" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 14.25l4.5 4.5M14.25 14.25l-4.5 4.5" />
+            </svg>
+          </div>
+          <div className="flex flex-col gap-1">
+            <h2 className="text-lg font-bold text-claro">Estabelecimento fechado neste dia</h2>
+            <p className="max-w-md text-sm text-suave">
+              {DIAS_SEMANA_LONGO[diaSemanaManaus(dataSelecionada)]} está configurado como dia sem
+              funcionamento. Não há vendas registradas e o estoque continua o mesmo do último
+              fechamento.
+            </p>
+          </div>
+          <button
+            type="button"
+            className="btn btn-suave px-4 py-2 text-sm"
+            onClick={() => setForcarAbertura(true)}
+          >
+            Registrar fechamento mesmo assim
+          </button>
+          <p className="text-xs text-suave">
+            Os dias de funcionamento são definidos em Configurações.
+          </p>
+        </section>
+      </div>
+    );
+  }
 
   if (relatorioParaExibir) {
     return (
@@ -1615,6 +1785,7 @@ export function Fechamento({ usuarioId, usuarioNome, usuarioFotoUrl, podeReabrir
       />
 
       {modalReabrir}
+      {modalAvisoFinalizacao}
 
       {/* Modal: novo cliente */}
       <Modal

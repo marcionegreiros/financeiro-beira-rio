@@ -109,7 +109,17 @@ export function Shell({ usuario }: { usuario: UsuarioAtual }) {
   const isOnline = useOnlineStatus();
   const [sistemaInicializado, setSistemaInicializado] = useState<boolean | null>(null);
   const [iniciandoDiaZero, setIniciandoDiaZero] = useState(false);
-  const [tela, setTela] = useState<Tela>('painel');
+  const [tela, setTela] = useState<Tela>(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const telaParam = params.get('tela');
+      const TELAS_VALIDAS = ['painel', 'fechamento', 'produtos', 'configuracoes', 'transferencias', 'despesas', 'socios', 'fiado', 'folha', 'auditoria', 'usuarios'];
+      if (telaParam && TELAS_VALIDAS.includes(telaParam)) {
+        return telaParam as Tela;
+      }
+    }
+    return 'painel';
+  });
   const [menuAbertoMobile, setMenuAbertoMobile] = useState(false);
   const [perfilAberto, setPerfilAberto] = useState(false);
   const [menuUsuarioAberto, setMenuUsuarioAberto] = useState(false);

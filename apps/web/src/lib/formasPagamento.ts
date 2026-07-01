@@ -23,6 +23,22 @@ export const FORMAS_PAGAMENTO: Record<string, string> = {
 const FORMAS_BANCO = ['pix', 'transferencia', 'boleto', 'debito', 'credito'];
 const FORMAS_DINHEIRO = ['dinheiro'];
 
+/**
+ * Resolve o id da conta "Caixa Físico Padrão (Gaveta)" — a única conta de
+ * dinheiro cujos movimentos entram na contagem do fechamento de caixa. Mesma
+ * regra de desempate usada no motor do fechamento (data/fechamento.ts): a conta
+ * de dinheiro marcada como destino padrão; senão, a primeira conta de dinheiro.
+ */
+export function idContaGaveta(
+  contas: Array<{ id: string; tipo: string; ehDestinoPadraoVenda: boolean }>,
+): string | null {
+  return (
+    contas.find((c) => c.tipo === 'dinheiro' && c.ehDestinoPadraoVenda)?.id ??
+    contas.find((c) => c.tipo === 'dinheiro')?.id ??
+    null
+  );
+}
+
 /** Formas válidas para uma conta conforme seu tipo ('banco' | 'dinheiro'). */
 export function formasParaConta(tipoConta: string | undefined | null): string[] {
   return tipoConta === 'banco' ? FORMAS_BANCO : FORMAS_DINHEIRO;

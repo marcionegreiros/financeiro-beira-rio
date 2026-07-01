@@ -2226,6 +2226,104 @@ export async function obterCapitalDashboard(): Promise<{ operacional: Centavos; 
   return { total, operacional };
 }
 
+export interface TanqueRelatorioInfo {
+  tanqueId: string;
+  nome: string;
+  combustivelNome: string;
+  nivelAtualMl: Mililitros;
+  capacidadeMl: Mililitros;
+  vendidoMesLitros: number;
+}
+
+export async function obterDadosTanquesFechamento(dataBase: string): Promise<TanqueRelatorioInfo[]> {
+  const tanquesConfig = await listarTanquesConfig(dataBase);
+  const inicioMes = dataBase.slice(0, 8) + '01';
+
+  const { data: fechamentos } = await supabase
+    .from('fechamento')
+    .select('id, data')
+    .gte('data', inicioMes)
+    .lte('data', dataBase)
+    .eq('status', 'travado')
+    .order('data', { ascending: true });
+
+  if (!fechamentos || fechamentos.length === 0) {
+    return tanquesConfig.map((t) => ({
+      tanqueId: t.id,
+      nome: t.nome,
+      combustivelNome: t.combustivelNome,
+      nivelAtualMl: t.nivel,
+      capacidadeMl: t.capacidade,
+      vendidoMesLitros: 0,
+    }));
+  }
+
+  const ids = fechamentos.map((f) => f.id);
+
+  const { data: baseRaw } = await supabase
+    .from('fechamento')
+    .select('id, data')
+    .lt('data', inicioMes)
+    .eq('status', 'travado')
+    .order('data', { ascending: false })
+    .limit(1);
+
+  const baseline = baseRaw && baseRaw.length > 0 ? baseRaw[0] : null;
+  const idsLeitura = baseline ? [...ids, baseline.id] : ids;
+
+  const { data: leituras } = await supabase
+    .from('leitura_bomba')
+    .select('fechamento_id, bomba_id, leitura')
+    .in('fechamento_id', idsLeitura);
+
+  const leiturasPorFech = new Map<string, Map<string, number>>();
+  for (const l of (leituras ?? []) as Array<{ fechamento_id: string; bomba_id: string; leitura: number }>) {
+    const mapa = leiturasPorFech.get(l.fechamento_id) ?? new Map<string, number>();
+    mapa.set(l.bomba_id, Number(l.leitura));
+    leiturasPorFech.set(l.fechamento_id, mapa);
+  }
+
+  const { data: bombasRaw } = await supabase
+    .from('bomba')
+    .select('id, tanque_id');
+
+  const tanqueDaBomba = new Map<string, string>();
+  for (const b of (bombasRaw ?? []) as Array<{ id: string; tanque_id: string }>) {
+    tanqueDaBomba.set(b.id, b.tanque_id);
+  }
+
+  const litrosVendidosPorTanque = new Map<string, number>();
+  const sequencia = baseline ? [baseline, ...fechamentos] : fechamentos;
+
+  for (let i = 1; i < sequencia.length; i++) {
+    const f = sequencia[i]!;
+    const atual = leiturasPorFech.get(f.id);
+    const anterior = leiturasPorFech.get(sequencia[i - 1]!.id);
+    if (!atual) continue;
+
+    for (const [bombaId, leituraAtual] of atual) {
+      const leituraAnt = anterior?.get(bombaId) ?? leituraAtual;
+      const diff = leituraAtual - leituraAnt;
+      if (diff > 0) {
+        const tanqueId = tanqueDaBomba.get(bombaId);
+        if (tanqueId) {
+          const atualSoma = litrosVendidosPorTanque.get(tanqueId) ?? 0;
+          litrosVendidosPorTanque.set(tanqueId, atualSoma + diff);
+        }
+      }
+    }
+  }
+
+  return tanquesConfig.map((t) => ({
+    tanqueId: t.id,
+    nome: t.nome,
+    combustivelNome: t.combustivelNome,
+    nivelAtualMl: t.nivel,
+    capacidadeMl: t.capacidade,
+    vendidoMesLitros: litrosVendidosPorTanque.get(t.id) ?? 0,
+  }));
+}
+
 export async function obterVendasMes(dataBase: string): Promise<{
   vendaDia: Centavos;
   vendaMes: Centavos;
@@ -3078,14 +3176,24 @@ export async function obterDadosUltimoFechamento(): Promise<ResumoFechamentoComp
   const [
     { data: movs, error: e2 },
     { data: fiados, error: e3 },
-    { data: configRaw, error: eCfg }
+    { data: configRaw, error: eCfg },
+    { data: contasRaw, error: eContas }
   ] = await Promise.all([
-    supabase.from('movimento').select('tipo, valor_centavos, forma_pagamento').eq('fechamento_id', fechId),
+    supabase.from('movimento').select('tipo, valor_centavos, forma_pagamento, conta_id').eq('fechamento_id', fechId),
     supabase.from('fiado').select('valor_centavos').eq('fechamento_id', fechId),
-    supabase.from('config').select('chave, valor_json')
+    supabase.from('config').select('chave, valor_json'),
+    supabase.from('conta').select('id, tipo, eh_destino_padrao_venda')
   ]);
 
-  if (e2 || e3 || eCfg || !movs) return null;
+  if (e2 || e3 || eCfg || eContas || !movs) return null;
+
+  // Só as despesas em dinheiro que saem da conta gaveta reduzem o esperado (§3.3);
+  // saídas de outras contas em dinheiro não pesam na contagem da gaveta.
+  const contasGaveta = (contasRaw ?? []) as Array<{ id: string; tipo: string; eh_destino_padrao_venda: boolean }>;
+  const idGaveta =
+    contasGaveta.find((c) => c.tipo === 'dinheiro' && c.eh_destino_padrao_venda)?.id ??
+    contasGaveta.find((c) => c.tipo === 'dinheiro')?.id ??
+    null;
 
   const config = new Map(
     ((configRaw ?? []) as Array<{ chave: string; valor_json: unknown }>).map((c) => [
@@ -3122,7 +3230,7 @@ export async function obterDadosUltimoFechamento(): Promise<ResumoFechamentoComp
     } else if (m.tipo === 'diferenca_caixa') {
       diferenca = val;
     } else if (['despesa', 'prolabore', 'vale'].includes(m.tipo)) {
-      if (m.forma_pagamento === 'dinheiro') {
+      if (m.forma_pagamento === 'dinheiro' && m.conta_id === idGaveta) {
         despesaDinheiro += absVal;
       }
     }

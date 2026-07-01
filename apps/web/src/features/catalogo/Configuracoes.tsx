@@ -66,6 +66,9 @@ const TEMAS_CONFIG = [
   },
 ];
 
+// Índice = dia da semana (0=Domingo … 6=Sábado), igual a Date.getUTCDay().
+const DIAS_SEMANA = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+
 export function Configuracoes({ tema, aoTrocarTema }: Props) {
   const toast = useToast();
   const [trocoFixo, setTrocoFixo] = useState('');
@@ -77,6 +80,7 @@ export function Configuracoes({ tema, aoTrocarTema }: Props) {
   const [taxaPixFixa, setTaxaPixFixa] = useState('');
   const [taxaVigenteEm, setTaxaVigenteEm] = useState(() => hojeManaus());
   const [mostrarAvulsos, setMostrarAvulsos] = useState(false);
+  const [diasFunc, setDiasFunc] = useState<boolean[]>([true, true, true, true, true, true, true]);
   const [carregando, setCarregando] = useState(true);
   const [salvando, setSalvando] = useState(false);
 
@@ -141,13 +145,15 @@ export function Configuracoes({ tema, aoTrocarTema }: Props) {
   useEffect(() => {
     async function carregar() {
       try {
-        const [troco, avulsos, taxas] = await Promise.all([
+        const [troco, avulsos, dias, taxas] = await Promise.all([
           lerConfig('troco_fixo_centavos'),
           lerConfig('fechamento_mostrar_avulsos'),
+          lerConfig('dias_funcionamento'),
           taxaCartaoVigenteEmData(),
         ]);
         if (troco !== null) setTrocoFixo(String(Number(troco) / 100));
         if (avulsos !== null) setMostrarAvulsos(Boolean(avulsos));
+        if (Array.isArray(dias) && dias.length === 7) setDiasFunc(dias.map(Boolean));
 
         if (taxas) {
           setTaxaDebitoPct(String(taxas.debito.percentualBp / 100));
@@ -184,6 +190,7 @@ export function Configuracoes({ tema, aoTrocarTema }: Props) {
       await Promise.all([
         salvarConfig('troco_fixo_centavos', Math.round(Number(trocoFixo || 0) * 100)),
         salvarConfig('fechamento_mostrar_avulsos', mostrarAvulsos),
+        salvarConfig('dias_funcionamento', diasFunc),
         salvarVigenciaTaxaCartao({
           data: taxaVigenteEm,
           debito: { percentualBp: Math.round(pctDebito * 100), fixaCentavos: fixaDebito },
@@ -247,6 +254,39 @@ export function Configuracoes({ tema, aoTrocarTema }: Props) {
             <p className="mt-1 text-xs text-suave pl-6">
               Se desativado, a seção de vendas avulsas e serviços não será exibida no fechamento de caixa por padrão.
             </p>
+          </div>
+        </section>
+
+        {/* Seção: Dias de funcionamento */}
+        <section className="cartao p-5">
+          <h2 className="mb-4 flex items-center gap-2 text-base font-bold text-claro">
+            <IconeCalendario />
+            Dias de funcionamento
+          </h2>
+          <p className="mb-4 text-sm text-suave">
+            Marque os dias em que o estabelecimento abre. Nos dias desmarcados, o fechamento
+            de caixa mostra que não houve funcionamento — sem afetar o estoque, que continua do
+            último fechamento. Você ainda pode registrar um fechamento num dia fechado, se precisar.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {DIAS_SEMANA.map((dia, i) => {
+              const ativo = diasFunc[i];
+              return (
+                <button
+                  type="button"
+                  key={dia}
+                  onClick={() => setDiasFunc((prev) => prev.map((v, j) => (j === i ? !v : v)))}
+                  aria-pressed={ativo ? 'true' : 'false'}
+                  className={`flex h-12 w-14 flex-col items-center justify-center rounded-xl border text-sm font-semibold transition-all ${
+                    ativo
+                      ? 'border-ambar bg-ambar/[0.06] text-ambar ring-2 ring-ambar/20'
+                      : 'border-borda bg-transparent text-suave hover:border-claro/20 hover:text-claro'
+                  }`}
+                >
+                  {dia}
+                </button>
+              );
+            })}
           </div>
         </section>
 
@@ -493,6 +533,14 @@ function IconeCaixa() {
   return (
     <svg className="h-5 w-5 text-ambar" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z" />
+    </svg>
+  );
+}
+
+function IconeCalendario() {
+  return (
+    <svg className="h-5 w-5 text-ambar" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5" />
     </svg>
   );
 }

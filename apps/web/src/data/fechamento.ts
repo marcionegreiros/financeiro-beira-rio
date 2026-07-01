@@ -15,11 +15,11 @@ import {
 } from './conversao';
 import { precoVigenteEm, custoVigenteEm, type RegistroVigencia } from '../domain/precos';
 import { taxaCartaoVigenteEm, type RegistroTaxa } from '../domain/taxaCartao';
-import { hojeManaus, agoraManausISO, limitesDoDiaManaus } from '../lib/datas';
+import { hojeManaus, agoraManausISO, limitesDoDiaManaus, diaSemanaManaus } from '../lib/datas';
 import { uuidv7 } from '../lib/uuidv7';
 import { asCentavos, type Centavos, parseReais, somar } from '../lib/money';
 import { asMililitros, asQuantidade, type Mililitros, type Quantidade } from '../domain/tipos';
-import { listarDespesasDoDia, type DespesaDoDia, listarFiadosEmAberto, type FiadoEmAberto } from './repositorios';
+import { listarDespesasDoDia, type DespesaDoDia, listarFiadosEmAberto, type FiadoEmAberto, DATA_DIA_ZERO } from './repositorios';
 
 export interface BombaCtx {
   id: string;
@@ -27,6 +27,7 @@ export interface BombaCtx {
   combustivel: string;
   precoLitro: Centavos | undefined;
   leituraAnterior: Mililitros;
+  entradasLitrosMl?: Mililitros;
 }
 
 export interface ProdutoCtx {
@@ -77,6 +78,13 @@ export interface ContextoFechamento {
     observacao: string;
   } | undefined;
   mostrarProdutosAvulsos: boolean;
+  /**
+   * Se o estabelecimento abre no dia da semana desta data (config
+   * `dias_funcionamento`). Quando `false` e ainda não há nada lançado, a tela
+   * mostra "não funciona neste dia" em vez do formulário. Não trava nada: é só
+   * o padrão — a continuidade de estoque já vem do último fechamento travado.
+   */
+  diaDeFuncionamento: boolean;
 }
 
 function centavosParaString(valor: number | bigint): string {
@@ -108,7 +116,7 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
     supabase.from('fechamento').select('id, status, rascunho, confirmado_em').eq('data', data).maybeSingle(),
     supabase
       .from('bomba')
-      .select('id,nome,tanque!inner(combustivel_id,ativo,combustivel(nome))')
+      .select('id,nome,tanque!inner(id,combustivel_id,ativo,combustivel(nome))')
       .eq('ativo', true)
       .eq('tanque.ativo', true),
     supabase.from('preco_combustivel').select('combustivel_id,valor_centavos,valido_a_partir_de'),
@@ -161,25 +169,6 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
   const histComb = agruparPrecos((precosComb ?? []) as PrecoRaw[], 'combustivel_id');
   const histProd = agruparPrecos((precosProd ?? []) as PrecoRaw[], 'produto_id');
 
-  const bombas: BombaCtx[] = ((bombasRaw ?? []) as BombaRaw[]).map((b) => {
-    const tanque = Array.isArray(b.tanque) ? b.tanque[0] : b.tanque;
-    const comb = tanque
-      ? Array.isArray(tanque.combustivel)
-        ? tanque.combustivel[0]
-        : tanque.combustivel
-      : null;
-    const combId = tanque?.combustivel_id ?? '';
-    return {
-      id: b.id,
-      nome: b.nome,
-      combustivel: comb?.nome ?? '',
-      precoLitro: precoVigenteEm(histComb.get(combId) ?? [], data),
-      leituraAnterior: litrosParaMililitros(leituraAnterior.get(b.id) ?? 0),
-    };
-  });
-
-
-
   const clientesFiado = ((clientesRaw ?? []) as Array<{ id: string; nome: string }>).map((c) => ({
     id: c.id,
     nome: c.nome,
@@ -193,6 +182,15 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
   );
   const trocoFixo = paraCentavos(Number(config.get('troco_fixo_centavos') ?? 0));
   const mostrarProdutosAvulsos = Boolean(config.get('fechamento_mostrar_avulsos') ?? false);
+
+  // Dias de funcionamento: array de 7 booleans indexado por dia da semana
+  // (0=Domingo … 6=Sábado). Ausente ⇒ abre todos os dias (comportamento antigo).
+  const diasFuncRaw = config.get('dias_funcionamento');
+  const diasFunc =
+    Array.isArray(diasFuncRaw) && diasFuncRaw.length === 7
+      ? diasFuncRaw.map(Boolean)
+      : [true, true, true, true, true, true, true];
+  const diaDeFuncionamento = diasFunc[diaSemanaManaus(data)] ?? true;
 
   // Taxa de cartão é versionada por DATA (§3.6 + §5.6): usa a vigente na data do
   // fechamento, nunca a de hoje. Histórico vazio → taxa zero (sem desconto).
@@ -229,10 +227,9 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
     contas.find((c) => c.tipo === 'banco')?.id ??
     null;
 
-  // Despesas e entradas do dia são fonte por DATA (independem de já haver
-  // fechamento), então o que foi lançado na janela Despesas / Produtos aparece aqui.
-  const [{ data: entradasDiaRaw }, despesasDoDiaRaw] = await Promise.all([
+  const [{ data: entradasDiaRaw }, { data: entradasCombRaw }, despesasDoDiaRaw] = await Promise.all([
     supabase.from('entrada_mercadoria').select('produto_id, quantidade').eq('data', data),
+    supabase.from('entrada_combustivel').select('tanque_id, litros').eq('data', data),
     listarDespesasDoDia(data),
   ]);
   const despesasDoDia = despesasDoDiaRaw.filter((d) => d.contaId === contaCaixaId);
@@ -244,6 +241,34 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
     }
     for (const [pid, q] of soma) entradasDoDia[pid] = String(q).replace('.', ',');
   }
+
+  const entradasCombustivelPorTanque = new Map<string, number>();
+  if (entradasCombRaw) {
+    for (const e of entradasCombRaw as Array<{ tanque_id: string; litros: number }>) {
+      const atual = entradasCombustivelPorTanque.get(e.tanque_id) ?? 0;
+      entradasCombustivelPorTanque.set(e.tanque_id, atual + Number(e.litros));
+    }
+  }
+
+  const bombas: BombaCtx[] = ((bombasRaw ?? []) as BombaRaw[]).map((b) => {
+    const tanque = Array.isArray(b.tanque) ? b.tanque[0] : b.tanque;
+    const comb = tanque
+      ? Array.isArray(tanque.combustivel)
+        ? tanque.combustivel[0]
+        : tanque.combustivel
+      : null;
+    const combId = tanque?.combustivel_id ?? '';
+    const tanqueId = tanque?.id ?? '';
+    const litrosEntrada = entradasCombustivelPorTanque.get(tanqueId) ?? 0;
+    return {
+      id: b.id,
+      nome: b.nome,
+      combustivel: comb?.nome ?? '',
+      precoLitro: precoVigenteEm(histComb.get(combId) ?? [], data),
+      leituraAnterior: litrosParaMililitros(leituraAnterior.get(b.id) ?? 0),
+      entradasLitrosMl: litrosParaMililitros(litrosEntrada),
+    };
+  });
 
   const despesasDinheiroDia = despesasDoDia
     .filter((d) => d.formaPagamento === 'dinheiro')
@@ -442,6 +467,7 @@ export async function carregarContexto(dataOpcional?: string): Promise<ContextoF
     entradasDoDia,
     valoresSalvos,
     mostrarProdutosAvulsos,
+    diaDeFuncionamento,
     confirmadoEm: fechExistente?.confirmado_em ?? null,
   };
 }
@@ -456,8 +482,8 @@ interface BombaRaw {
   id: string;
   nome: string;
   tanque:
-    | { combustivel_id: string; combustivel: { nome: string } | { nome: string }[] | null }
-    | { combustivel_id: string; combustivel: { nome: string } | { nome: string }[] | null }[]
+    | { id: string; combustivel_id: string; combustivel: { nome: string } | { nome: string }[] | null }
+    | { id: string; combustivel_id: string; combustivel: { nome: string } | { nome: string }[] | null }[]
     | null;
 }
 
@@ -560,6 +586,40 @@ const MOVS_GERADOS_FECHAMENTO = [
   'transferencia',
   'deposito',
 ] as const;
+
+/**
+ * Datas de fechamentos ainda EM ABERTO (rascunho, não travado) que ficariam
+ * encravadas entre dias fechados. Usado para avisar antes de finalizar.
+ *
+ * A faixa é restrita ao intervalo operacional para não acusar falso positivo:
+ *  - depois do DIA ZERO (1º fechamento travado): rascunhos anteriores ao dia
+ *    zero são espúrios e devem ser ignorados;
+ *  - antes do dia que está sendo fechado;
+ *  - até hoje (inclusive): um dia aberto no FUTURO não está "encravado" e não
+ *    precisa de aviso.
+ */
+export async function listarDiasAbertosAntes(data: string): Promise<string[]> {
+  // Dia zero = data do primeiro fechamento travado (fallback p/ DATA_DIA_ZERO).
+  const { data: diaZeroRow } = await supabase
+    .from('fechamento')
+    .select('data')
+    .eq('status', 'travado')
+    .order('data', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  const diaZeroData = (diaZeroRow as { data: string } | null)?.data ?? DATA_DIA_ZERO;
+
+  const { data: rows, error } = await supabase
+    .from('fechamento')
+    .select('data')
+    .eq('status', 'aberto')
+    .gt('data', diaZeroData)
+    .lt('data', data)
+    .lte('data', hojeManaus())
+    .order('data', { ascending: true });
+  if (error) throw error;
+  return ((rows ?? []) as Array<{ data: string }>).map((r) => r.data);
+}
 
 export async function confirmarFechamento(r: ResumoConfirmacao): Promise<string> {
   const agora = agoraManausISO();

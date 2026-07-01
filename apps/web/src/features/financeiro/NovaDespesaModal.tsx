@@ -21,7 +21,7 @@ import type { UsuarioAtual } from '../../data/usuario';
 import type { Centavos } from '../../lib/money';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { diaIso } from '../../lib/formato';
-import { FORMAS_PAGAMENTO, formasParaConta, formaCoerente } from '../../lib/formasPagamento';
+import { FORMAS_PAGAMENTO, formasParaConta, formaCoerente, idContaGaveta } from '../../lib/formasPagamento';
 
 export { FORMAS_PAGAMENTO };
 
@@ -233,8 +233,18 @@ export function NovaDespesaModal({
 
     setSalvando(true);
     try {
+      // A trava de caixa fechado só vale para o dinheiro da gaveta: uma despesa
+      // só pesa no fechamento se sai (ou saía, em edição) da conta gaveta.
+      // Banco e outras contas em dinheiro passam como se o caixa estivesse aberto.
+      const idGaveta = idContaGaveta(contas);
+      const afetaGaveta =
+        idGaveta != null &&
+        (contaId === idGaveta || despesaEdicao?.contaId === idGaveta);
+
       // Verificar se a data do caixa está fechada
-      const statusFechamento = await verificarFechamentoStatus(dataLancamento);
+      const statusFechamento = afetaGaveta
+        ? await verificarFechamentoStatus(dataLancamento)
+        : 'aberto';
       const isFechado = statusFechamento === 'travado';
 
       if (isFechado) {
